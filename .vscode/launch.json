@@ -1,0 +1,18 @@
+{
+ 
+  "version": "0.2.0",
+  "configurations": [
+
+
+    {
+      "name": "Python: Run RSPile App",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "app.main",
+      "justMyCode": true,
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "python": "${workspaceFolder}/.venv/Scripts/python.exe",
+    }
+  ]
+}
