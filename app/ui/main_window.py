@@ -5,7 +5,7 @@ This wires together:
 - project lifecycle (new/open/save)
 - data entry dialogs (pile, loads, soil layers)
 - curve generation (t-z, p-y, q-z)
-- a simple axial analysis (load-settlement) with quick exports
+- a simple axial analysis (load-settlement) with quick exports as csv and pdf
 """
 
 import pathlib
