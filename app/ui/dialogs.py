@@ -7,8 +7,6 @@ Small Qt dialog windows for editing model inputs:
 Each dialog returns a simple dict on accept() so the main window can update state.
 """
 
-
-
 from PySide6.QtWidgets import (
   QDialog, QFormLayout, QDialogButtonBox, QDoubleSpinBox, QComboBox
 )
@@ -22,12 +20,12 @@ class PileDialog(QDialog):
         lay = QFormLayout(self)
         
         self.len_m = QDoubleSpinBox()
-        self.len_m.setRange(0.0, 1e6)  # Min 0.1 m to avoid zero
+        self.len_m.setRange(0.0, 1e6)
         self.len_m.setDecimals(3)
         self.len_m.setSuffix(" m")
 
         self.d_m = QDoubleSpinBox()
-        self.d_m.setRange(0.0, 1e6)  # Min 0.01 m for diameter
+        self.d_m.setRange(0.0, 1e6)
         self.d_m.setDecimals(3)
         self.d_m.setSuffix(" m")
 
@@ -85,13 +83,8 @@ class LoadDialog(QDialog):
 
     self.lat = QDoubleSpinBox()
     self.lat.setRange(-1e6, 1e6)
-    self.axial.setDecimals(2)
+    self.lat.setDecimals(2)
     self.lat.setSuffix(" kN")
-
-    self.moment = QDoubleSpinBox()
-    self.moment.setRange(-1e9, 1e9)
-    self.moment.setDecimals(2)
-    self.moment.setSuffix(" kN.m")
 
     self.moment = QDoubleSpinBox()
     self.moment.setRange(-1e9, 1e9)

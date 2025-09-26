@@ -138,7 +138,7 @@ def get_py_curve(layer, pile_diameter, depth):
 
     # Initial modulus k (MN/m^3) per bhi (from API tables/approx)
     k = 5.4 * phi_deg ** 1.5 / 1000  # MPa/m approx; refine with table
-    A = max(3 - 0.8 * z / D, 0.9) # Reduction factor
+    A = max(3 - 0.8 * z / D, 0.9) # Reduction factorD
     for i, yi in enumerate(y):
       p[i] = A * Pu * math.tanh((k * z / Pu) * yi)
   return y, p

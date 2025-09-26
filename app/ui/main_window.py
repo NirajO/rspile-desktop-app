@@ -10,10 +10,11 @@ This wires together:
 
 import pathlib
 import matplotlib.pyplot as plt
+import matplotlib as mpl
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
-from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QLabel, QPushButton, QFileDialog, QMessageBox, QStatusBar, QTextEdit, QTabWidget)
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QAction
+from PySide6.QtWidgets import (QApplication, QMainWindow, QMenu, QHBoxLayout, QWidget, QVBoxLayout, QLabel, QPushButton, QFileDialog, QMessageBox, QStatusBar, QTextEdit, QTabWidget)
+from PySide6.QtCore import Qt, QPoint, QSettings
+from PySide6.QtGui import QAction, QKeySequence
 from ..models.curves import get_tz_curve, get_qz_curve, get_py_curve
 import pandas as pd
 from reportlab.lib.pagesizes import letter
@@ -31,6 +32,7 @@ class MainWindow(QMainWindow):
     self.resize(1000, 700)
 
     self.project: dict | None = None
+    self.last_axial_results = None
 
     #-------central area------
     central = QWidget()
@@ -54,10 +56,13 @@ class MainWindow(QMainWindow):
     #----menu----
     self._build_menu()
 
+    #-------Initialize themes-------
+    self._init_theme()
+
     #initial UI state
     self.refresh_ui()
 
-    #---------Menus---------
+  #---------Menus---------
   def _build_menu(self):
       # File
       m_file = self.menuBar().addMenu("&File")
@@ -98,11 +103,28 @@ class MainWindow(QMainWindow):
       act_soil_add.triggered.connect(self.add_soil_layer)
       m_edit.addAction(act_soil_add)
 
+      # Settings
+      m_settings = self.menuBar().addMenu("&Settings")
+
+      self.actLight = QAction("Light Mode", self, checkable=True)
+      self.actDark = QAction("Dark Mode", self, checkable=True)
+
+      self.actLight.triggered.connect(lambda: self.set_theme("light"))
+      self.actDark.triggered.connect(lambda: self.set_theme("dark"))
+
+      m_settings.addAction(self.actLight)
+      m_settings.addAction(self.actDark)
+      m_settings.addSeparator()
+
+      self._sync_theme_checks()
+
       #Help
       m_help = self.menuBar().addMenu("&Help")
       act_about = QAction("About", self)
       act_about.triggered.connect(self.about)
       m_help.addAction(act_about)
+
+
 
   #-------Actions--------
   def about(self):
@@ -124,6 +146,7 @@ class MainWindow(QMainWindow):
           "loads": {},           #axial, lateral, moment
           "analysis": {"segments": 40}
         }
+        self.last_axial_results = None
         self.plot_area.clear()
         self.statusBar().showMessage("New Project created", 3000)
         self.refresh_ui()
@@ -136,7 +159,7 @@ class MainWindow(QMainWindow):
           return
         try:
           self.project = load_project(fn)
-          self.statusBar().showMessage(f"Loaded{pathlib.Path(fn).name}", 3000)
+          self.statusBar().showMessage(f"Loaded {pathlib.Path(fn).name}", 3000)
           self.refresh_ui()
         except Exception as e:
           QMessageBox.critical(self, "Open Failed", f"could not open file.\n\n{e}")
@@ -227,42 +250,157 @@ class MainWindow(QMainWindow):
         QMessageBox.warning(self, "Missing Data", "Edit Pile, loads, and add soil layers first.")
         return
     results = axial_analysis(self.project["pile"], self.project["loads"], self.project["soil_profile"])
+    self.last_axial_results = results
+
+    def make_export_bar():
+      bar = QHBoxLayout()
+      btn_csv = QPushButton("Save Axial CSV")
+      btn_pdf = QPushButton("Save Axial PDF")
+      btn_csv.clicked.connect(self.export_axial_csv)
+      btn_pdf.clicked.connect(self.export_axial_pdf)
+      bar.addWidget(btn_csv)
+      bar.addWidget(btn_pdf)
+      bar.addStretch(1)
+      return bar
 
     # Plot load-settlement
-    fig_ls, ax_ls = plt.subplots(figsize=(8, 6))
-    ax_ls.plot(results['settlements_m'], results['loads_kN'])
+    loads_kN = list(results['loads_kN'])
+    sett_mm = [1000.0 * abs(s) for s in results['settlements_m']]
+
+    from matplotlib.ticker import MaxNLocator, FormatStrFormatter
+
+    fig_ls, ax_ls = plt.subplots(figsize=(9, 5), constrained_layout=True)
+    ax_ls.plot(sett_mm, loads_kN, marker='o', linewidth=2)
     ax_ls.set_title('Load-Settlement Curve')
     ax_ls.set_xlabel('Head Settlement (m)')
     ax_ls.set_ylabel('Axial Load (kN)')
-    ax_ls.grid(True)
+    ax_ls.set_xlim(0, max(1.0, (max(sett_mm) if sett_mm else 0) * 1.10))
+    ax_ls.set_ylim(0, (max(loads_kN) if loads_kN else 0) * 1.10)
+    ax_ls.grid(True, alpha=0.35)
+    ax_ls.xaxis.set_major_locator(MaxNLocator(6))
+    ax_ls.xaxis.set_minor_locator(MaxNLocator(12))
+    ax_ls.xaxis.set_major_formatter(FormatStrFormatter('%.2f'))
+
     canvas_ls = FigureCanvas(fig_ls)
-    self.plot_area.addTab(canvas_ls, "Load-settlement")
+    self._attach_export_context_menu(canvas_ls)
+    
+    ls_tab = QWidget()
+    ls_vbox = QVBoxLayout(ls_tab)
+    ls_vbox.setContentsMargins(6, 6, 6, 6)
+    ls_vbox.addWidget(canvas_ls)
+    ls_vbox.addLayout(make_export_bar())
+    self.plot_area.addTab(ls_tab, "Load-Settlement")
+
 
     # Plot shear vs depth
-    fig_sd, ax_sd = plt.subplots(figsize=(8, 6))
-    ax_sd.plot(results['plots']['shear_N'], results['plots']['z_m'])
+    shear_kN = [s / 1000.0 for s in results['plots']['shear_N']]
+    depth_m = list(results['plots']['z_m'])
+    shear_max = max(shear_kN) if shear_kN else 0.0
+
+    fig_sd, ax_sd = plt.subplots(figsize=(9, 5), constrained_layout=True)
+    ax_sd.plot(sett_mm, loads_kN, marker='o', linewidth=2)
     ax_sd.set_title('Cumulative Shaft Shear vs Depth')
     ax_sd.set_xlabel('Cumulative Shear (N)')
     ax_sd.set_ylabel('Depth (m)')
-    ax_sd.grid(True)
+    ax_sd.invert_yaxis()
+    ax_sd.set_xlim(0, max(1e-3, shear_max * 1.10))
+    ax_sd.grid(True, alpha=0.35)
+
     canvas_sd = FigureCanvas(fig_sd)
-    self.plot_area.addTab(canvas_sd, "Shear vs Depth")
+    self._attach_export_context_menu(canvas_sd)
+    
+    sd_tab = QWidget()
+    sd_vbox = QVBoxLayout(sd_tab)
+    sd_vbox.setContentsMargins(6, 6, 6, 6)
+    sd_vbox.addWidget(canvas_sd)
+    sd_vbox.addLayout(make_export_bar())
+    self.plot_area.addTab(sd_tab, "Shear vs Depth")
 
-    # CSV
-    df = pd.DataFrame({'Load_kN': results['loads_kN'], 'Settlement_m': results['settlements_m']})
-    csv_path = QFileDialog.getSaveFileName(self, "Save CSV", "", "CSV (*.csv)")
-    if csv_path:
-        df.to_csv(csv_path, index=False)
+    self.plot_area.setCurrentWidget(ls_tab)
+    self.statusBar().showMessage(
+        "Axial Analysis complete. Use File -> Export or right-click a plot to save.", 5000
+    )
 
-    # PDF
-    pdf_path = QFileDialog.getSaveFileName(self, "Save PDF", "", "PDF (*.pdf)")
-    if pdf_path:
-        c = canvas.Canvas(pdf_path, pagesize=letter)
-        c.drawString(100, 750, "Axial Analysis Report")
-        c.drawString(100, 700, f"Max Settlement: {max(results['settlements_m']):.4f} m at {max(results['loads_kN'])} kN")
-        c.drawString(100, 650, f"Toe Resistance: {results['plots']['toe_res_N']:.2f} N")
-        c.save()
-            
+  #---------Right click export menu------------------
+  def _attach_export_context_menu(self, widget: QWidget):
+      widget.setContextMenuPolicy(Qt.CustomContextMenu)
+      widget.customContextMenuRequested.connect(
+          lambda pos, w=widget: self._show_export_menu(w, pos)
+      )  
+
+  def _show_export_menu(self, widget: QWidget, pos: QPoint):
+      menu = QMenu(widget)
+      a_csv = menu.addAction("Export Axial CSV")
+      a_pdf = menu.addAction("Export Axial PDF")
+      chosen = menu.exec(widget.mapToGlobal(pos))
+      if chosen == a_csv:
+          self.export_axial_csv()
+      elif chosen == a_pdf:
+          self.export_axial_pdf()
+
+  #---------Export Handlers------------
+  def export_axial_csv(self):
+      if not self.last_axial_results:
+          QMessageBox.information(self, "No results", "Run an axial analysis first.")
+          return
+      
+      results = self.last_axial_results
+      df = pd.DataFrame({
+          'Loads_kN': results['loads_kN'],
+          'Settlement_m': results['settlements_m']
+      })
+
+      csv_path, _ = QFileDialog.getSaveFileName(self, "Save Axial Curve CSV", "axial_curve.csv", "CSV (*.csv)")
+      if not csv_path:
+          return
+      if not csv_path.lower().endswith(".csv"):
+          csv_path += ".csv"
+
+      try:
+          df.to_csv(csv_path, index=False)
+          self.statusBar().showMessage(f"Saved: {csv_path}", 5000)
+      except Exception as e:
+          QMessageBox.critical(self, "Save Failed", f"could not save CSV:\n{e}")
+
+  def export_axial_pdf(self):
+      if not self.last_axial_results:
+          QMessageBox.information(self, "No results", "Run an axial analysis first.")
+          return
+      
+      results = self.last_axial_results
+      pdf_path, _ = QFileDialog.getSaveFileName(self, "Save Axial Report (PDF)", "axial_report.pdf", "PDF (*.pdf)")
+      if not pdf_path:
+          return
+      if not pdf_path.lower().endswith(".pdf"):
+          pdf_path += ".pdf"
+
+      try:
+          c = canvas.Canvas(pdf_path, pagesize=letter)
+          width, height = letter
+          y = height - 72  # 1 inch margin
+
+          c.setFont("Helvetica-Bold", 14)
+          c.drawString(72, y, "Axial Analysis Report")
+          y -= 24
+
+          c.setFont("Helvetica", 11)
+          max_set = float(max(results['settlements_m']))
+          max_load = float(max(results['loads_kN']))
+          toe_res = float(results['plots']['toe_res_N'])
+
+          c.drawString(72, y, f"Max Settlement: {max_set:.4f} m at {max_load:.0f} kN")
+          y -= 16
+          c.drawString(72, y, f"Toe Resistance (final step): {toe_res:.1f} N")
+
+          c.showPage()
+          c.save()
+          self.statusBar().showMessage(f"Saved: {pdf_path}", 5000)
+
+      except Exception as e:
+          QMessageBox.critical(self, "Save failed", f"Could not save PDF:\n{e}")
+  
+        
+          
 
   #--------edit menu handlers----------
   def _ensure_project(self):
@@ -300,7 +438,7 @@ class MainWindow(QMainWindow):
   def refresh_ui(self):
             if self.project is None:
               self.info.setPlainText(
-                "No project laoded.\n\n"
+                "No project loaded.\n\n"
                 "Use File -> New to start a new project, or File -> Open.. to load one."
               )
               self.btn_gen.setEnabled(False)
@@ -333,8 +471,74 @@ class MainWindow(QMainWindow):
                         extra = f"phi={L.get('phi_deg', 0)}"
                     lines.append(
                         f" {i}. {L.get('type', '?')} {L.get('from_m', 0)}-{L.get('to_m',0)} m, "
-                        f"U+0079={L.get('gamma_kNpm3',0)} kN/m³, {extra}"
+                        f"gamma={L.get('gamma_kNpm3',0)} kN/m³, {extra}"
                     )
             lines += ["", "Tip: Use Edit menu to enter data."]
             self.info.setPlainText("\n".join(lines))
             self.btn_gen.setEnabled(True)
+
+  def _init_theme(self):
+    s = QSettings("RSPile", "StudentEdition")
+    theme = s.value("theme", "light")
+    self._current_theme = theme
+    self._apply_theme(theme)
+    self._sync_theme_checks()
+
+  def set_theme(self, theme: str):
+    if theme not in ("light", "dark"):
+      theme = "light"
+    self._current_theme = theme
+    self._apply_theme(theme)
+    QSettings("RSPile", "StudentEdition").setValue("theme", theme)
+    self._sync_theme_checks()
+    
+  def toggle_theme(self):
+    self.set_theme("dark" if getattr(self, "_current_theme", "light") != "dark" else "light")
+
+  def _sync_theme_checks(self):
+    if hasattr(self, "actLight"):
+      self.actLight.setChecked(getattr(self, "_current_theme", "light") == "light")
+    if hasattr(self, "actDark"):
+      self.actDark.setChecked(getattr(self, "_current_theme", "light") == "dark")
+      
+  def _apply_theme(self, theme: str):
+    app = QApplication.instance()
+    if not app:
+      return
+    
+    if theme == "dark":
+      app.setStyleSheet("""
+        QWidget {background: #232323; color:#eeeeee;}
+        QMenuBar, QMenu { background: #2c2c2c; color: #eeeeee;}
+        QToolTip { color: #eeeeee; background:#444;}
+        QPushButton { background:#3a3a3a; border: 1px solid #555; padding: 6px;}
+        QPushButton:hover {background:#444;}
+        QTextEdit, QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {
+          background:#2b2b2b; border: 1px solid #555; color:#eee;
+        }
+        QTabBar::tab { background:#2c2c2c; padding:6px 10px;}
+        QTabBar::tab:selected {background:#3a3a3a;}
+        QStatusBar {background:#2c2c2c;}
+
+      """)
+    else:
+      app.setStyleSheet("")
+
+    #-----------Matplotlib: light mode for curves-----------
+    mpl.rcParams.update(mpl.rcParamsDefault)
+    mpl.style.use("default")
+    mpl.rcParams.update({
+      "figure.facecolor": "white",
+      "axes.facecolor": "white",
+      "savefig.facecolor": "white",
+      "axes.edgecolor": "black",
+      "axes.labelcolor": "black",
+      "xtick.color": "black",
+      "ytick.color": "black",
+      "grid.color": "#CCCCCC",
+    })
+      
+      
+
+
+  
