@@ -9,17 +9,19 @@ This wires together:
 """
 
 import pathlib
+import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib as mpl
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from PySide6.QtWidgets import (QApplication, QMainWindow, QMenu, QHBoxLayout, QWidget, QVBoxLayout, QLabel, QPushButton, QFileDialog, QMessageBox, QStatusBar, QTextEdit, QTabWidget)
 from PySide6.QtCore import Qt, QPoint, QSettings
 from PySide6.QtGui import QAction, QKeySequence
-from ..models.curves import get_tz_curve, get_qz_curve, get_py_curve
+from ..models.curves import get_tz_curve, get_qz_curve, get_py_curve, make_py_spring
 import pandas as pd
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 from ..models.axial import axial_analysis
+from ..models.lateral import PileProps as LatPileProps, LateralLoadCase, LateralConfig, lateral_analysis
 
 # relative imports within the package
 from .dialogs import PileDialog, LoadDialog, SoilLayerDialog
@@ -90,6 +92,10 @@ class MainWindow(QMainWindow):
       act_axial = QAction("Run Axial Analysis", self)
       act_axial.triggered.connect(self.run_axial_analysis)
       m_edit.addAction(act_axial)
+
+      actRunlat = QAction("Run Lateral Analysis", self)
+      actRunlat.triggered.connect(self.run_lateral_analysis)
+      m_edit.addAction(actRunlat)
 
       act_pile = QAction("Edit Pile...", self)
       act_pile.triggered.connect(self.edit_pile)
@@ -272,7 +278,7 @@ class MainWindow(QMainWindow):
     fig_ls, ax_ls = plt.subplots(figsize=(9, 5), constrained_layout=True)
     ax_ls.plot(sett_mm, loads_kN, marker='o', linewidth=2)
     ax_ls.set_title('Load-Settlement Curve')
-    ax_ls.set_xlabel('Head Settlement (m)')
+    ax_ls.set_xlabel('Head Settlement (mm)')
     ax_ls.set_ylabel('Axial Load (kN)')
     ax_ls.set_xlim(0, max(1.0, (max(sett_mm) if sett_mm else 0) * 1.10))
     ax_ls.set_ylim(0, (max(loads_kN) if loads_kN else 0) * 1.10)
@@ -298,9 +304,9 @@ class MainWindow(QMainWindow):
     shear_max = max(shear_kN) if shear_kN else 0.0
 
     fig_sd, ax_sd = plt.subplots(figsize=(9, 5), constrained_layout=True)
-    ax_sd.plot(sett_mm, loads_kN, marker='o', linewidth=2)
+    ax_sd.plot(shear_kN, depth_m, marker='o', linewidth=2)
     ax_sd.set_title('Cumulative Shaft Shear vs Depth')
-    ax_sd.set_xlabel('Cumulative Shear (N)')
+    ax_sd.set_xlabel('Cumulative Shear (kN)')
     ax_sd.set_ylabel('Depth (m)')
     ax_sd.invert_yaxis()
     ax_sd.set_xlim(0, max(1e-3, shear_max * 1.10))
@@ -320,6 +326,45 @@ class MainWindow(QMainWindow):
     self.statusBar().showMessage(
         "Axial Analysis complete. Use File -> Export or right-click a plot to save.", 5000
     )
+  
+  def run_lateral_analysis(self):
+      #Gather inputs
+      pile = LatPileProps(length_m=self.project.pile.length_m,
+                          EI_Nm2=self.project.pile.E_Npa * 1e9 * self.project.pile.I_m4,
+                          d_m=self.project.pile.diameter_m,
+                          n_nodes=81)
+      
+      # Load setps (example: 0-> 200 -> 400 -> 600 kN Lateral)
+      steps = [LateralLoadCase(H_N=h*1e3) for h in [0, 200, 400, 600]]
+
+      py_backbone = get_py_curve(self.project.soil_layers)
+      py_spring = make_py_spring(py_backbone)
+
+      cfg = LateralConfig(bc="free_head", max_iters=40, tol=1e-7, relax=0.8)
+
+      out = lateral_analysis(pile, steps, py_spring, cfg)
+
+      #plot head H-y
+      H = [h for (h, y0) in out["head_curve"]]
+      y0 = [y for (h, y0) in out["head_curve"]]
+      fig1, ax1 = plt.subplots(figsize=(7,5), constrained_layout=True)
+      ax1.plot(np.array(y0)*1e3, np.array(H)/1e3, marker='o', lineWidth=2)
+      ax1.set_xlabel("Head Deflection (mm)")
+      ax1.set_ylabel("Applied Lateral Load H (kN)")
+      ax1.grid(True, alpha=0.35)
+      self._embed_matplotlib(fig1, title="Lateral Load-Deflection")
+
+      # Plot profiles at last step
+      last = out["steps"][-1]
+      fig2, ax2 = plt.subplots(figsize=(7,5), constrained_layout=True)
+      ax2.plot(last.y_m*1e3, last.z_m, linewidth=2)
+      ax2.invert_yaxis()
+      ax2.set_xlabel("Deflection (mm)")
+      ax2.set_ylabel("Depth (m)")
+      ax2.grid(True, alpha=0.35)
+      self._embed_matplotlib(fig2, title="Deflection vs Depth")
+
+  
 
   #---------Right click export menu------------------
   def _attach_export_context_menu(self, widget: QWidget):

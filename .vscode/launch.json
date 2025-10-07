@@ -13,6 +13,10 @@
       "cwd": "${workspaceFolder}",
       "console": "integratedTerminal",
       "python": "${workspaceFolder}/.venv/Scripts/python.exe",
+      "env": {
+        "QT_API": "pyside6",
+        "MPLBACKEND": "Agg"
+      }
     }
   ]
 }

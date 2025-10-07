@@ -10,6 +10,7 @@ These follow common engineering practice (API RP 2GEO 2011/2014; Matlock?Reese s
 
 import math
 import numpy as np
+from typing import Callable, Tuple
 
 def get_tz_curve(layer, pile_diameter, depth):
   """
@@ -142,3 +143,18 @@ def get_py_curve(layer, pile_diameter, depth):
     for i, yi in enumerate(y):
       p[i] = A * Pu * math.tanh((k * z / Pu) * yi)
   return y, p
+
+def make_py_spring (py_backbone: Callable[[float, float], float]) -> Callable[[float, float], Tuple[float, float]]:
+  """
+  Wrap a p-y backbone p = f(y, z) into a function returning (p, dpdy).
+  Uses a small symmetric diff for tangent
+  y in meters (lateral diflection), p in N/m (soil reaction per unit length)
+  """
+  def spring(y: float, z:float) -> Tuple[float, float]:
+    p = py_backbone(y, z)
+    eps = max(1e-9, abs(y) * 1e-6)
+    p_plus = py_backbone(y + eps, z)
+    p_minus = py_backbone(y- eps, z)
+    dpdy = (p_plus - p_minus) / (2.0 * eps)
+    return p, max(dpdy, 0.0)  # clamp negative tangent
+  return spring
