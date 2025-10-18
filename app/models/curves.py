@@ -103,7 +103,6 @@ def get_py_curve(layer, pile_diameter, depth):
   if layer["type"] == "clay":
     su = layer["undrained_shear_strength_kPa"]
     if su <= 0:
-      print(f"Warning: Zero or negative su ({su}) in layer at depth {depth}, using default behavior")
       su = 1.0  # Minimal default to avoid divison by zero
     epsilon50 = 0.02 if su < 24 else 0.005
 
@@ -122,7 +121,7 @@ def get_py_curve(layer, pile_diameter, depth):
     D = pile_diameter
     z = depth
     # Factors per API RP 2GEO sand
-    k_p = (1 + math.sin(phi) / (1 - math.sin(phi))) # Passive coeff
+    k_p = (1 + math.sin(phi)) / (1 - math.sin(phi)) # Passive coeff
     k_a = 1 / k_p
     k0 = 0.4 # At-rest
     alpha = phi / 2

@@ -12,7 +12,7 @@ import pathlib
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib as mpl
-from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas, NavigationToolbar2QT as NavigationToolbar
 from PySide6.QtWidgets import (QApplication, QMainWindow, QMenu, QHBoxLayout, QWidget, QVBoxLayout, QLabel, QPushButton, QFileDialog, QMessageBox, QStatusBar, QTextEdit, QTabWidget)
 from PySide6.QtCore import Qt, QPoint, QSettings
 from PySide6.QtGui import QAction, QKeySequence
@@ -21,7 +21,7 @@ import pandas as pd
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 from ..models.axial import axial_analysis
-from ..models.lateral import PileProps as LatPileProps, LateralLoadCase, LateralConfig, lateral_analysis
+from ..models.lateral import PileProps as LatPileProps, LateralLoadCase, BCType, LateralConfig, lateral_analysis
 
 # relative imports within the package
 from .dialogs import PileDialog, LoadDialog, SoilLayerDialog
@@ -328,43 +328,126 @@ class MainWindow(QMainWindow):
     )
   
   def run_lateral_analysis(self):
-      #Gather inputs
-      pile = LatPileProps(length_m=self.project.pile.length_m,
-                          EI_Nm2=self.project.pile.E_Npa * 1e9 * self.project.pile.I_m4,
-                          d_m=self.project.pile.diameter_m,
-                          n_nodes=81)
-      
-      # Load setps (example: 0-> 200 -> 400 -> 600 kN Lateral)
-      steps = [LateralLoadCase(H_N=h*1e3) for h in [0, 200, 400, 600]]
+    if self.project is None:
+         QMessageBox.warning(self, "No Project", "Create or open a project first.")
+         return
+     
+     #------Gathers pile data------
+    pile_data = self.project.get("pile", {})
+    if not pile_data:
+         QMessageBox.warning(self, "Missing Data", "Please define pile properties first.")
+         return
+     
+    try: 
+         L = float(pile_data.get("length_m", 0))
+         D = float(pile_data.get("diameter_m", 0))
+         E = float(pile_data.get("elastic_modulus_pa", 0))
 
-      py_backbone = get_py_curve(self.project.soil_layers)
-      py_spring = make_py_spring(py_backbone)
+    except (ValueError, TypeError):
+         QMessageBox.critical(self, "Invalid Data", "Pile parameters must be numeric.")
+         return
 
-      cfg = LateralConfig(bc="free_head", max_iters=40, tol=1e-7, relax=0.8)
+    if L <= 0 or D <= 0 or E <= 0:
+        QMessageBox.critical(self, "Inavlid Input", "Pile length, diameter, or E must be positive.")
+        return
 
-      out = lateral_analysis(pile, steps, py_spring, cfg)
+    #----Compute stiffness (EI)------
+    I = 3.14159265358979 * (D ** 4) / 64.0 # moment of inertia for circular crosss-section
+    EI = E * I 
 
-      #plot head H-y
-      H = [h for (h, y0) in out["head_curve"]]
-      y0 = [y for (h, y0) in out["head_curve"]]
-      fig1, ax1 = plt.subplots(figsize=(7,5), constrained_layout=True)
-      ax1.plot(np.array(y0)*1e3, np.array(H)/1e3, marker='o', lineWidth=2)
-      ax1.set_xlabel("Head Deflection (mm)")
-      ax1.set_ylabel("Applied Lateral Load H (kN)")
-      ax1.grid(True, alpha=0.35)
-      self._embed_matplotlib(fig1, title="Lateral Load-Deflection")
+    pile = LatPileProps(length_m=L, EI_Nm2=EI, d_m=D, n_nodes=81)
 
-      # Plot profiles at last step
-      last = out["steps"][-1]
-      fig2, ax2 = plt.subplots(figsize=(7,5), constrained_layout=True)
-      ax2.plot(last.y_m*1e3, last.z_m, linewidth=2)
-      ax2.invert_yaxis()
-      ax2.set_xlabel("Deflection (mm)")
-      ax2.set_ylabel("Depth (m)")
-      ax2.grid(True, alpha=0.35)
-      self._embed_matplotlib(fig2, title="Deflection vs Depth")
+    #------Get soil profile layers-------
+    soil_layers = self.project.get("soil_profile", [])
+    if not soil_layers:
+        QMessageBox.warning(self, "Missing Soil Data", "Please define soil layers first.")
+        return
+    
+    def layer_at_depth(depth_m: float):
+        for layer in soil_layers:
+            if layer.get("from_m", 0.0) <= depth_m < layer.get("to_m", 0.0):
+                return layer
+        return soil_layers[-1]
+    
+    def py_backbone(y_val: float, z_val: float) -> float:
+        lyr = layer_at_depth(z_val)
+        y_vals, p_vals_kNm = get_py_curve(lyr, D, z_val)
+        
+        if callable(y_vals) or callable(p_vals_kNm):
+            return 0.0
+        try:
+            y_np = np.asarray(y_vals, dtype=float).ravel()
+            p_np = np.asarray(p_vals_kNm, dtype=float).ravel()
+        except Exception:
+            return 0.0
+        if y_np.size == 0 or p_np.size == 0 or y_np.size != p_np.size:
+            return 0.0
+        
+        order = np.argsort(y_np)
+        y_sorted = y_np[order]
+        p_sorted = p_np[order]
 
-  
+        yq = float(np.clip(y_val, y_sorted[0], y_sorted[-1]))
+        p_kNm = float(np.interp(yq, y_sorted, p_sorted))
+        return p_kNm * 1000.0
+
+    py_spring = make_py_spring(py_backbone)
+
+    # Define Load steps (kN -> N)
+    steps = [LateralLoadCase(H_N=h * 1e3) for h in [0, 200, 400, 600]]
+
+    # Solver configuration
+    cfg = LateralConfig(bc=BCType.FREE_HEAD, max_iters=60, tol=1e-7, relax=0.8)
+
+    # Run analysis
+    out = lateral_analysis(pile, steps, py_spring, cfg)
+
+    pairs = out.get("head_curve", [])
+    if not pairs:
+        QMessageBox.warning(self, "No Data", "Lateral solver returned no head curve points.")
+        return
+
+    #------Plot Head Load-Deflection Curve-------
+    H_kN = np.array([h for (h, y0) in pairs], dtype=float) / 1e3
+    y_head_mm = np.array([y0 for (h, y0) in pairs], dtype=float) * 1e3
+
+    fig1, ax1 = plt.subplots(figsize=(9, 5), constrained_layout=True)
+    ax1.plot(y_head_mm, H_kN, marker="o", linewidth=2)
+    ax1.set_title("Lateral Load-Deflection")
+    ax1.set_xlabel("Head Deflection (mm)")
+    ax1.set_ylabel("Applied Lateral Load H (kN)")
+    ax1.grid(True, alpha=0.35)
+
+    canvas1 = FigureCanvas(fig1)
+    tab1 = QWidget()
+    vbox1 = QVBoxLayout(tab1)
+    vbox1.setContentsMargins(6, 6, 6, 6)
+    vbox1.addWidget(NavigationToolbar(canvas1, tab1))
+    vbox1.addWidget(canvas1)
+    self.plot_area.addTab(tab1, "Lateral H-y")
+    
+
+    #-------Plot Deflection vs Depth for Last Step---------
+    if not out.get("steps"):
+        QMessageBox.warning(self, "No Data", "No step results to plot.")
+        return
+    last = out["steps"][-1]
+    fig2, ax2 = plt.subplots(figsize=(9, 5), constrained_layout=True)
+    ax2.plot(last.y_m * 1e3, last.z_m, linewidth=2)
+    ax2.invert_yaxis()
+    ax2.set_xlabel("Deflection (mm)")
+    ax2.set_ylabel("Depth (m)")
+    ax2.grid(True, alpha=0.35)
+
+    canvas2 = FigureCanvas(fig2)
+    tab2 = QWidget()
+    vbox2 = QVBoxLayout(tab2)
+    vbox2.setContentsMargins(6, 6, 6, 6)
+    vbox2.addWidget(NavigationToolbar(canvas2, tab2))
+    vbox2.addWidget(canvas2)
+    self.plot_area.addTab(tab2, "Deflection vs Depth")
+
+    self.plot_area.setCurrentWidget(tab1)
 
   #---------Right click export menu------------------
   def _attach_export_context_menu(self, widget: QWidget):

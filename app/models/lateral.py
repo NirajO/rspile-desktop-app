@@ -1,3 +1,4 @@
+
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Dict, Callable, Literal, Tuple
@@ -11,7 +12,7 @@ p(y, z): soil reaction per unit length (N/m)
 Governing beam-on-nonlinear-Winkler foundation
 """
 class BCType(str, Enum):
-  FREE_HEAD = 'free_head'
+  FREE_HEAD = "free_head"
   FIXED_HEAD = "fixed_head"
 
 @dataclass
@@ -28,7 +29,7 @@ class LateralLoadCase:
 
 @dataclass
 class LateralConfig:
-  bc: BCType = "free_head"
+  bc: BCType = BCType.FREE_HEAD
   max_iters: int = 40
   tol: float = 1e-6
   relax: float = 1.0    #0.5-1.0 helps convergence in very soft soils
@@ -68,58 +69,54 @@ def finite_diff_mats(n: int, dz: float) -> Tuple[np.ndarray, np.ndarray, np.ndar
   D4 = D2 @ D2
   return D2, D3, D4
 
-def apply_boundary_conditions(D2, D3, D4, y, pile: PileProps, cfg: LateralConfig, lc: LateralLoadCase, EI, dz):
+def apply_boundary_conditions(D2, D3, A, y, pile: PileProps, cfg: LateralConfig, lc: LateralLoadCase, EI, dz):
   """
   Enforce head/tip BCs on matrices by replacing corresponding rows.
-  Head (z=0): free_head -> M(0)=EI*y'' (0)=0 and V(0)=EI*y'''(0) = H
-              fixed_head -> y(0)=0 and theta(0)=y'(0)=0; external H/M applied as restrictions
-  Tip (z=L): free tip -> M(L)=0 and V(L)=0 (classical for long piles); can be adjusted if needed
+  Head (z=0):
+    - FREE_HEAD handled in the caller (latera_analysis) so we do nothing here for head.
+    - FIXED_HEAD: y(0)=0 and y'(0)=0
+  Tipe (z=L): free tip -> M(L)=0 and V(L)=0
   """
   n = y.size
+  rhs_bc = np.zeros(n)
 
-  rhs_bc = np.zeros
-
-  # Head (i = 0)
-  if cfg.bc == BCType.FREE_HEAD:
-    pass
-  else:
-    y[0] = 0.0
-    D2[0, :] = 0.0; D3[0, :] = 0.0; D4[0, :] = 0.0
-    D4[0, 0] = 1.0 #identify row, forces y(0)=0 via Newton matrix
+  #---Head BC if FIXED_HEAD-----
+  if cfg.bc == BCType.FIXED_HEAD:
+    # y(0) = 0
+    A[0, :] = 0.0
+    A[0, 0] = 1.0
     rhs_bc[0] = 0.0
-    #theta(0)=0 -> y'(0)=0 ~ (-3y0 + 4y1 - y2)/(2dz) = 0 (use a ghost-free stencil)
-    D2[1, :] = 0.0; D3[1, :] = 0.0; D4[1, :] = 0.0
-    # Put a first-derivative row into D4 to reuse matrix; crude but effective
-    if y.size >= 3:
-      D4[1, 0] = -3.0/(2*dz)
-      D4[1, 1] = 4.0/(2*dz)
-      D4[1, 2] = -1.0/(2*dz)
-    rhs_bc[1] = 0.0
 
-  # Tip (i=n-1): free tip default => M(L)=0 and V(L)=0
+    #y('(0)=0 ~ (-3y0 + 4y1 - y2)/(2dz) = 0
+    if n >= 3:
+      A[1, :] = 0.0
+      A[1, 0] = -3.0/(2*dz)
+      A[1, 1] = 4.0/(2*dz)
+      A[1, 2] = -1.0/(2*dz)
+      rhs_bc[1] = 0.0
+
+  #---- Tip (free): M(L)=0 and V(L)=0------
   i = n - 1
-  # Overwrite last two rows similarly to represent constraints:
-  D2[i, :] = 0.0; D3[i, :]= 0.0; D4[i, :] = 0.0
-  # Use D2 row to enforce M(L)=0 and D3 row to enforce V(L)=0 by copying stencils:
-  # Simple approach: copy interior to last row indices
+
+  # Enforce y''(L)=0 (curvature -> moment zero)
   if n >= 3:
-    # M(L)=0: y''(L)=0
-    D4[i, i-1] = 1.0/ (dz**2)
-    D4[i, i] = -2.0 / (dz**2)
-    D4[i, i-2] = 1.0 / (dz**2)
+    A[i, :] = 0.0
+    A[i, i] = -2.0/(dz**2)
+    A[i, i-1] = 1.0/(dz**2)
+    A[i, i-2] = 1.0/(dz**2)
     rhs_bc[i] = 0.0
-  
+
+  # Enforce y'''(L)=0 (shear zero) at the row i-1
   if n >= 4:
-    # V(L)=0: y'''(L)=0 -> add as row i-1 to avoid clobbering; keep it simple:
-    D2[i-1, :] = 0.0; D3[i-1, :] = 0.0; D4[i-1, :] = 0.0
-    D4[i-1, i] = 1.0/(dz**3)
-    D4[i-1, i-1] = -3.0/(dz**3)
-    D4[i-1, i-2] = 3.0/(dz**3)
-    D4[i-1, i-3] = -1.0/(dz**3)
+    A[i-1, :] = 0.0
+    A[i-1, i] = 1.0/(dz**3)
+    A[i-1, i-1] = -3.0/(dz**3)
+    A[i-1, i-2] = 3.0/(dz**3)
+    A[i-1, i-3] = -1.0/(dz**3)
     rhs_bc[i-1] = 0.0
 
   return rhs_bc
-
+ 
 def lateral_analysis(
     pile: PileProps,
     load_steps: List[LateralLoadCase],
@@ -140,8 +137,8 @@ def lateral_analysis(
   # State across Load steps
   y_prev = np.zeros(n)
 
-  results_per_step: List[LateralResults] = []
-  head_curve = List[Tuple[float, float]] = []
+  results_per_step: list[LateralResults] = []
+  head_curve: list[tuple[float, float]] = []
 
   for _, lc in enumerate(load_steps, 1):
     y = y_prev.copy()
@@ -152,15 +149,15 @@ def lateral_analysis(
       for i in range(n):
         p[i], k[i] = py_spring(y[i], z[i])
 
-      # Newton system: EI*D4*y - p(y,z) = 0 -> (EI*D4 - diag(k)) dy = r
+      # Newton system: (EI*D4 - diag(k)) dy = p - EI*D4*y
       A = EI * D4 - np.diag(k)
-      r = p - (EI * (D4 @ y)) 
+      r = p - EI * (D4 @ y) 
 
       # Boundary conditions
       rhs_bc = apply_boundary_conditions(D2.copy(), D3.copy(), A, y, pile, cfg, lc, EI, dz)
       
       # Inject head loads for free-head case
-      if cfg.bc == BCType.FREE_HAND:
+      if cfg.bc == BCType.FREE_HEAD:
         #enforce M(0)=0: use D2 stencil row at 0
         A[0, :] = 0.0
         # approximate y''(0)=0 with [y0 - 2y1 + y2]/dz^2 = 0
@@ -173,21 +170,19 @@ def lateral_analysis(
         A[1, :] = 0.0
         if n >= 4:
           # simple forward-biased third-derivative
-          A[1, 3] = 1.0/(dz**3) * EI
-          A[1, 2] = -3.0/(dz**3) * EI
-          A[1, 1] = 3.0/(dz**3) * EI
-          A[1, 0] = -1.0/(dz**3) * EI
+          A[1, 3] = EI/(dz**3)
+          A[1, 2] = -3*EI/(dz**3)
+          A[1, 1] = 3*EI/(dz**3)
+          A[1, 0] = -EI/(dz**3)
         r[1] = lc.H_N
 
         # If moment is also applied at head, superimpose via curvature: EI*y''(0)=M
-        if abs(lc.M_Nm) > 0.0:
-          #Replace the M(0)=0 row (A[0, :]) with EI*y''(0)=M
-          if n >= 3:
-            A[0, :] = 0.0
-            A[0, 0] = 1.0/(dz**2) * EI
-            A[0, 1] = -2.0/(dz**2) * EI
-            A[0, 2] = 1.0/(dz**2) * EI
-            r[0] = lc.M_Nm
+        if abs(lc.M_Nm) > 0.0 and n >= 3:
+          A[0, :] = 0.0
+          A[0, 0] = EI/(dz**2)
+          A[0, 1] = -2*EI/(dz**2)
+          A[0, 2] = EI/(dz**2)
+          r[0] = lc.M_Nm
 
       # Merge rhs: residual + bc contributions (bc vector already matched rows)
       r = r + rhs_bc        
@@ -206,7 +201,12 @@ def lateral_analysis(
     
     # Post-processing
     theta = np.zeros(n)
-    theta[1:-1] = (y[2:] - y[:-2]) / (2*dz)
+    if n >= 2:
+      theta[0] = (y[1] - y[0]) / dz
+      theta[-1] = (y[-1] - y[-2]) / dz
+    if n >= 3:
+      theta[1:-1] = (y[2:] - y[:-2]) / (2*dz)
+
     ypp = D2 @ y
     yppp = D3 @ y
     M = EI * ypp
@@ -226,4 +226,5 @@ def lateral_analysis(
     "steps": results_per_step,
     "head_curve": head_curve,
   }
+
 
