@@ -13,9 +13,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib as mpl
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas, NavigationToolbar2QT as NavigationToolbar
-from PySide6.QtWidgets import (QApplication, QMainWindow, QMenu, QHBoxLayout, QWidget, QVBoxLayout, QLabel, QPushButton, QFileDialog, QMessageBox, QStatusBar, QTextEdit, QTabWidget)
+from PySide6.QtWidgets import (QApplication, QMainWindow, QMenu, QHBoxLayout, QWidget, QVBoxLayout, QLabel, QPushButton, QFileDialog, QMessageBox, QStatusBar, QTextEdit, QTabWidget, QToolBar, QDockWidget, QListWidget, QListWidgetItem, QFrame)
 from PySide6.QtCore import Qt, QPoint, QSettings
-from PySide6.QtGui import QAction, QKeySequence
+from PySide6.QtGui import QAction, QKeySequence, QIcon
 from ..models.curves import get_tz_curve, get_qz_curve, get_py_curve, make_py_spring
 import pandas as pd
 from reportlab.lib.pagesizes import letter
@@ -30,8 +30,10 @@ from ..io.serializer import load_project, save_project
 class MainWindow(QMainWindow):
   def __init__(self):
     super().__init__()
-    self.setWindowTitle("RSPile Student Edition by Niraj, Hemraj and Manish")
-    self.resize(1000, 700)
+    self.setWindowTitle("RSPile - Pile Analysis Tool")
+    self.setWindowIcon(QIcon("icons/app_icon.png"))
+    self.resize(1200, 800)
+    self.setMinimumSize(900, 600)
 
     self.project: dict | None = None
     self.last_axial_results = None
@@ -41,10 +43,15 @@ class MainWindow(QMainWindow):
     self.setCentralWidget(central)
     self.layout = QVBoxLayout(central)
 
+    self.welcome = self._make_welcome()
+    self.layout.addWidget(self.welcome)
+
     self.info = QTextEdit(readOnly=True)
     self.info.setMinimumHeight(140)
 
     self.plot_area = QTabWidget()
+    self.plot_area.setTabsClosable(True)
+    self.plot_area.tabCloseRequested.connect(self._close_plot_tab)
     self.layout.addWidget(self.info)
     self.layout.addWidget(self.plot_area)
 
@@ -55,6 +62,15 @@ class MainWindow(QMainWindow):
     #-----status bar-----
     self.setStatusBar(QStatusBar(self))
 
+    #---------status bar widgets + dirty flag ---------
+    self._dirty = False
+    self.status_project = QLabel("No Project Loaded.")
+    self.status_dirty = QLabel("")
+    self.status_dirty.setStyleSheet("color:#d9534f; font-weight:600;")
+
+    self.statusBar().addWidget(self.status_project)
+    self.statusBar().addPermanentWidget(self.status_dirty)
+
     #----menu----
     self._build_menu()
 
@@ -64,25 +80,46 @@ class MainWindow(QMainWindow):
     #initial UI state
     self.refresh_ui()
 
+    self._update_status_bar()
+
+    self._refresh_recent_list()
+
   #---------Menus---------
   def _build_menu(self):
+      #----------- Toolbar ---------------
+      tb = QToolBar("Main")
+      tb.setMovable(False)
+      self.addToolBar(Qt.TopToolBarArea, tb)
+
       # File
       m_file = self.menuBar().addMenu("&File")
 
-      act_new = QAction("New Project", self)
+      act_new = QAction(QIcon.fromTheme("document-new"), "New Project", self)
+      act_new.setShortcut(QKeySequence.New)
       act_new.triggered.connect(self.new_project)
-      m_file.addAction(act_new)
+      tb.addAction(act_new); m_file.addAction(act_new)
 
-      act_open = QAction("Open...", self)
+      act_open = QAction(QIcon.fromTheme("document-open"), "Open", self)
+      act_open.setShortcut(QKeySequence.Open)
       act_open.triggered.connect(self.open_project)
-      m_file.addAction(act_open)
+      tb.addAction(act_open); m_file.addAction(act_open)
 
-      act_save = QAction("Save As...", self)
+      act_save = QAction(QIcon.fromTheme("document-save"), "Save As", self)
+      act_save.setShortcut(QKeySequence.SaveAs)
       act_save.triggered.connect(self.save_project)
-      m_file.addAction(act_save)
+      tb.addAction(act_save); m_file.addAction(act_save)
 
+      # Recent submenu
+      self._m_recent = m_file.addMenu("Open &Recent")
+      self._rebuild_recent_menu = lambda: (
+          self._m_recent.clear(),
+          [self._m_recent.addAction(pathlib.Path(p).name, lambda p=p: self._open_path(p)) for p in self._recent_files()]
+      )
+      self._rebuild_recent_menu()
       m_file.addSeparator()
+
       act_exit = QAction("Exit", self)
+      act_exit.setShortcut(QKeySequence.Quit)
       act_exit.triggered.connect(self.close)
       m_file.addAction(act_exit)
 
@@ -90,22 +127,29 @@ class MainWindow(QMainWindow):
       m_edit = self.menuBar().addMenu("&Edit")
 
       act_axial = QAction("Run Axial Analysis", self)
+      act_axial.setShortcut("Ctrl+Shift+A")
       act_axial.triggered.connect(self.run_axial_analysis)
-      m_edit.addAction(act_axial)
+      tb.addAction(act_axial); m_edit.addAction(act_axial)
 
-      actRunlat = QAction("Run Lateral Analysis", self)
-      actRunlat.triggered.connect(self.run_lateral_analysis)
-      m_edit.addAction(actRunlat)
+      act_lat = QAction("Run Lateral Analysis", self)
+      act_lat.setShortcut("Ctrl+Shift+L")
+      act_lat.triggered.connect(self.run_lateral_analysis)
+      tb.addAction(act_lat); m_edit.addAction(act_lat)
+
+      m_edit.addSeparator()
 
       act_pile = QAction("Edit Pile...", self)
+      act_pile.setShortcut("Ctrl+P")
       act_pile.triggered.connect(self.edit_pile)
       m_edit.addAction(act_pile)
 
       act_loads = QAction("Edit Loads...", self)
+      act_loads.setShortcut("Ctrl+L")
       act_loads.triggered.connect(self.edit_loads)
       m_edit.addAction(act_loads)
 
       act_soil_add = QAction("Add Soil Layer...", self)
+      act_soil_add.setShortcut("Ctrl+S")
       act_soil_add.triggered.connect(self.add_soil_layer)
       m_edit.addAction(act_soil_add)
 
@@ -130,6 +174,41 @@ class MainWindow(QMainWindow):
       act_about.triggered.connect(self.about)
       m_help.addAction(act_about)
 
+      #----------Left Dock: Project Inspector----------
+      self._dock = QDockWidget("Project Inspector", self)
+      self._dock.setObjectName("ProjectInspectorDock")
+      self._dock.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
+      dockw = QWidget()
+      dlay = QVBoxLayout(dockw)
+      self._lbl_meta = QLabel("")
+      self._lbl_meta.setWordWrap(True)
+
+      # Quick actions
+      line = QFrame(); line.setFrameShape(QFrame.HLine); line.setFrameShadow(QFrame.Sunken)
+      b_row = QVBoxLayout()
+      b_pile = QPushButton("Edit Pile..."); b_pile.clicked.connect(self.edit_pile)
+      b_loads = QPushButton("Edit Loads..."); b_loads.clicked.connect(self.edit_loads)
+      b_soil = QPushButton("Add Soil Layer..."); b_soil.clicked.connect(self.add_soil_layer)
+      b_curves = QPushButton("Generate Curves"); b_curves.clicked.connect(self.generate_curves)
+      b_axial = QPushButton("Run Axial Analysis"); b_axial.clicked.connect(self.run_axial_analysis)
+      b_lat = QPushButton("Run Lateral Analysis"); b_lat.clicked.connect(self.run_lateral_analysis)
+      for b in (b_pile, b_loads, b_soil, b_curves, b_axial, b_lat):
+          b.setMinimumHeight(28); dlay.addWidget(b)
+
+      dlay.insertWidget(0, self._lbl_meta)
+      dlay.insertWidget(1, line)
+
+      self.recent_list = QListWidget()
+      self.recent_list.setMaximumHeight(160)
+      self.recent_list.itemDoubleClicked.connect(lambda it: self._open_path(it.text()))
+
+      dlay.addWidget(QLabel("Recent Projects"))
+      dlay.addWidget(self.recent_list)
+
+      dlay.addStretch(1)
+      dockw.setLayout(dlay)
+      self._dock.setWidget(dockw)
+      self.addDockWidget(Qt.LeftDockWidgetArea, self._dock)
 
 
   #-------Actions--------
@@ -142,6 +221,48 @@ class MainWindow(QMainWindow):
           " (t-z, q-z for axial; p-y for lateral)" \
           " Developed by Niraj Ojha, Hemraj Khatri and Manish Lohani at McNeese State University"
         )
+
+  def _make_welcome(self) -> QWidget:
+      w = QWidget()
+      lay = QVBoxLayout(w)
+      title = QLabel("RSPile - Student Edition")
+      title.setStyleSheet("font-size: 22px; font-weight: 600;")
+      subtitle = QLabel("Analyze single piles under axial and lateral loads")
+      subtitle.setStyleSheet("color: #666; margin-bottom: 8px;")
+
+      btn_row = QHBoxLayout()
+      bnew = QPushButton("New Project")
+      bopen = QPushButton("Open Project")
+      bnew.setFixedWidth(160)
+      bopen.setFixedWidth(160)
+      bnew.clicked.connect(self.new_project)
+      bopen.clicked.connect(self.open_project)
+      btn_row.addWidget(bnew)
+      btn_row.addWidget(bopen)
+      btn_row.addStretch(1)
+
+      # recent
+      rec = QListWidget()
+      rec.setMaximumHeight(160)
+      for p in self._recent_files():
+          QListWidgetItem(p, rec)
+      rec.itemDoubleClicked.connect(lambda it: self._open_path(it.text()))
+
+      lay.addStretch(1)
+      lay.addWidget(title, 0, Qt.AlignLeft)
+      lay.addWidget(subtitle, 0, Qt.AlignLeft)
+      lay.addLayout(btn_row)
+      lay.addWidget(QLabel("Recent Projects"))
+      lay.addWidget(rec)
+      lay.addStretch(3)
+      return w
+  
+  def _refresh_recent_list(self):
+      if not hasattr(self, "recent_list"):
+          return
+      self.recent_list.clear()
+      for p in self._recent_files():
+          QListWidgetItem(p, self.recent_list)
 
   def new_project(self):
         #Minimal schema we will expand later
@@ -156,6 +277,7 @@ class MainWindow(QMainWindow):
         self.plot_area.clear()
         self.statusBar().showMessage("New Project created", 3000)
         self.refresh_ui()
+        self._set_dirty(True)
 
   def open_project(self):
         fn, _ = QFileDialog.getOpenFileName(
@@ -167,9 +289,11 @@ class MainWindow(QMainWindow):
           self.project = load_project(fn)
           self.statusBar().showMessage(f"Loaded {pathlib.Path(fn).name}", 3000)
           self.refresh_ui()
+          self._set_dirty(False)
+          self._push_recent_file(fn)
         except Exception as e:
           QMessageBox.critical(self, "Open Failed", f"could not open file.\n\n{e}")
-
+        
   def save_project(self):
           if self.project is None:
             QMessageBox.warning(self, "No Project", "Create or open a project first.")
@@ -182,8 +306,48 @@ class MainWindow(QMainWindow):
           try:
             save_project(self.project, fn)
             self.statusBar().showMessage("Project Saved", 3000)
+            self._set_dirty(False)
           except Exception as e:
             QMessageBox.critical(self, "Save Failed", f"Could not save file.\n\n{e}")
+          self._push_recent_file(fn)
+
+  def _recent_files(self) -> list[str]:
+      s = QSettings("RSPile", "StudentEdition")
+      return s.value("recent_files", [], list)
+  
+  def _push_recent_file(self, path: str) -> None:
+      s = QSettings("RSPile", "StudentEdition")
+      items = [p for p in self._recent_files() if p != path]
+      items.insert(0, path)
+      s.setValue("recent_files", items[:10])
+      if hasattr(self, "_rebuild_recent_menu"):
+          self._rebuild_recent_menu()
+      self._refresh_recent_list()
+
+  def _open_path(self, path: str):
+      try:
+          self.project = load_project(path)
+          self._push_recent_file(path)
+          self.statusBar().showMessage(f"Loaded {pathlib.Path(path).name}", 3000)
+          self.plot_area.clear()
+          self.refresh_ui()
+      except Exception as e:
+          QMessageBox.critical(self, "Open Failed", f"Could not open file.\n\n{e}")
+
+  def _update_status_bar(self):
+      """Refresh the bottom status labels based on current project + dirty flag"""
+      if self.project:
+          meta = self.project.get("meta", {})
+          name = meta.get("name", "Untitled")
+          units = meta.get("units", "SI")
+          self.status_project.setText(f"Project: {name} - Units: {units}")
+      else:
+          self.status_project.setText("No Project Loaded")
+      self.status_dirty.setText("● Unsaved" if self._dirty else "")
+
+  def _set_dirty(self, value: bool = True):
+      self._dirty = bool(value)
+      self._update_status_bar()
 
   def generate_curves(self):
             if self.project is None:
@@ -220,7 +384,10 @@ class MainWindow(QMainWindow):
                 ax_tz.set_ylabel('Shaft Friction t (kPa)')
                 ax_tz.grid(True)
                 canvas_tz = FigureCanvas(fig_tz)
-                self.plot_area.addTab(canvas_tz, f"t-z layer {i+1}")
+                wrap = QWidget(); v = QVBoxLayout(wrap); v.setContentsMargins(6,6,6,6)
+                v.addWidget(NavigationToolbar(canvas_tz, wrap))
+                v.addWidget(canvas_tz)
+                self.plot_area.addTab(wrap, f"t-z Layer {i+1}")
 
                 # p-y
                 fig_py, ax_py = plt.subplots(figsize=(8, 6))
@@ -231,7 +398,10 @@ class MainWindow(QMainWindow):
                 ax_py.set_ylabel('Lateral Resistance p (kN/m)')
                 ax_py.grid(True)
                 canvas_py = FigureCanvas(fig_py)
-                self.plot_area.addTab(canvas_py, f"p-y Layer {i+1}")
+                wrap = QWidget(); v = QVBoxLayout(wrap); v.setContentsMargins(6,6,6,6)
+                v.addWidget(NavigationToolbar(canvas_py, wrap))
+                v.addWidget(canvas_py)
+                self.plot_area.addTab(wrap, f"p-y Layer {i+1}")
 
             if tip_layer:
                 if "gamma_kNpm3" not in tip_layer:
@@ -247,7 +417,10 @@ class MainWindow(QMainWindow):
                 ax_qz.set_ylabel('Tip Resistance q (kPa)')
                 ax_qz.grid(True)
                 canvas_qz = FigureCanvas(fig_qz)
-                self.plot_area.addTab(canvas_qz, "q-z Tip")
+                wrap = QWidget(); v = QVBoxLayout(wrap); v.setContentsMargins(6,6,6,6)
+                v.addWidget(NavigationToolbar(canvas_qz, wrap))
+                v.addWidget(canvas_qz)
+                self.plot_area.addTab(wrap, f"q-z Layer {i+1}")
             self.statusBar().showMessage("Curves generated and plotted", 3000)
             QMessageBox.information(self, "Curves", "Preview plots generated")
 
@@ -293,6 +466,7 @@ class MainWindow(QMainWindow):
     ls_tab = QWidget()
     ls_vbox = QVBoxLayout(ls_tab)
     ls_vbox.setContentsMargins(6, 6, 6, 6)
+    ls_vbox.addWidget(NavigationToolbar(canvas_ls, ls_tab))
     ls_vbox.addWidget(canvas_ls)
     ls_vbox.addLayout(make_export_bar())
     self.plot_area.addTab(ls_tab, "Load-Settlement")
@@ -318,6 +492,7 @@ class MainWindow(QMainWindow):
     sd_tab = QWidget()
     sd_vbox = QVBoxLayout(sd_tab)
     sd_vbox.setContentsMargins(6, 6, 6, 6)
+    sd_vbox.addWidget(NavigationToolbar(canvas_sd, sd_tab))
     sd_vbox.addWidget(canvas_sd)
     sd_vbox.addLayout(make_export_bar())
     self.plot_area.addTab(sd_tab, "Shear vs Depth")
@@ -542,6 +717,7 @@ class MainWindow(QMainWindow):
           try:
             self.project["pile"] = dlg.result_data()
             self.refresh_ui()
+            self._set_dirty(True)
           except ValueError as e:
               QMessageBox.critical(self, "Input Error", str(e))
 
@@ -551,6 +727,7 @@ class MainWindow(QMainWindow):
       if dlg.exec():
           self.project["loads"] = dlg.result_data()
           self.refresh_ui()
+          self._set_dirty(True)
 
   def add_soil_layer(self):
       self._ensure_project()
@@ -561,16 +738,49 @@ class MainWindow(QMainWindow):
           # keeping layers ordered by start depth
           self.project["soil_profile"].sort(key=lambda L: L.get("from_m", 0.0))
           self.refresh_ui()
+          self._set_dirty(True)
+
+  def _close_plot_tab(self, index: int):
+      w = self.plot_area.widget(index)
+      self.plot_area.removeTab(index)
+      if w is not None:
+          w.deleteLater()
+
+  def _add_plot_tab(self, fig, title: str):
+      """Warap a Matplotlib fig with a canvas + toolbar and add as a tab"""
+      try:
+          fig.tight_layout()
+      except Exception:
+          pass
+      
+      canvas = FigureCanvas(fig)
+      wrap = QWidget()
+      v = QVBoxLayout(wrap)
+      v.setContentsMargins(6,6,6,6)
+
+      toolbar = NavigationToolbar(canvas, wrap)
+      v.addWidget(toolbar)
+      v.addWidget(canvas)
+
+      idx = self.plot_area.addTab(wrap, title)
+      self.plot_area.setCurrentIndex(idx)
+      return canvas, toolbar
 
   #-----UI helper-------
   def refresh_ui(self):
             if self.project is None:
-              self.info.setPlainText(
-                "No project loaded.\n\n"
-                "Use File -> New to start a new project, or File -> Open.. to load one."
-              )
-              self.btn_gen.setEnabled(False)
+              self.info.hide()
+              self.plot_area.hide()
+              self.btn_gen.hide()
+              self.welcome.show()
+              self._lbl_meta.setText("No Projects Loaded.")
               return
+            
+            # existing summary
+            self.welcome.hide()
+            self.info.show()
+            self.plot_area.show()
+            self.btn_gen.show()
             
             # Show a simple summary of the current project
             meta = self.project.get("meta", {})
@@ -578,6 +788,12 @@ class MainWindow(QMainWindow):
             pile = self.project.get("pile", {})
             loads = self.project.get("loads", {})
             layers = self.project.get("soil_profile", [])
+            self._lbl_meta.setText(
+                f"<b>Units</b>: {meta.get('units', 'SI')}<br>"
+                f"<b>Pile</b>: {('✓' if pile else '—')} &nbsp; "
+                f"<b>Loads</b>: {('✓' if loads else '—')} &nbsp; "
+                f"<b>Layers</b>: {len(layers)}"
+            )
 
             lines = [
               "Project Summary",
@@ -604,6 +820,7 @@ class MainWindow(QMainWindow):
             lines += ["", "Tip: Use Edit menu to enter data."]
             self.info.setPlainText("\n".join(lines))
             self.btn_gen.setEnabled(True)
+            self._update_status_bar()
 
   def _init_theme(self):
     s = QSettings("RSPile", "StudentEdition")
