@@ -8,7 +8,7 @@ This wires together:
 - a simple axial analysis (load-settlement) with quick exports as csv and pdf
 """
 
-import pathlib
+import pathlib, io
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib as mpl
@@ -19,7 +19,9 @@ from PySide6.QtGui import QAction, QKeySequence, QIcon
 from ..models.curves import get_tz_curve, get_qz_curve, get_py_curve, make_py_spring
 import pandas as pd
 from reportlab.lib.pagesizes import letter
-from reportlab.pdfgen import canvas
+from reportlab.lib.units import inch
+from reportlab.lib.utils import ImageReader
+from reportlab.pdfgen import canvas as rl_canvas
 from ..models.axial import axial_analysis
 from ..models.lateral import PileProps as LatPileProps, LateralLoadCase, BCType, LateralConfig, lateral_analysis
 
@@ -83,6 +85,8 @@ class MainWindow(QMainWindow):
     self._update_status_bar()
 
     self._refresh_recent_list()
+
+    self._axial_figures = []
 
   #---------Menus---------
   def _build_menu(self):
@@ -431,6 +435,8 @@ class MainWindow(QMainWindow):
     results = axial_analysis(self.project["pile"], self.project["loads"], self.project["soil_profile"])
     self.last_axial_results = results
 
+    self._axial_figures = []
+
     def make_export_bar():
       bar = QHBoxLayout()
       btn_csv = QPushButton("Save Axial CSV")
@@ -471,6 +477,7 @@ class MainWindow(QMainWindow):
     ls_vbox.addLayout(make_export_bar())
     self.plot_area.addTab(ls_tab, "Load-Settlement")
 
+    self._axial_figures.append(fig_ls)
 
     # Plot shear vs depth
     shear_kN = [s / 1000.0 for s in results['plots']['shear_N']]
@@ -495,7 +502,9 @@ class MainWindow(QMainWindow):
     sd_vbox.addWidget(NavigationToolbar(canvas_sd, sd_tab))
     sd_vbox.addWidget(canvas_sd)
     sd_vbox.addLayout(make_export_bar())
-    self.plot_area.addTab(sd_tab, "Shear vs Depth")
+    self.plot_area.addTab(sd_tab, "Shear Vs Depth")
+
+    self._axial_figures.append(fig_sd)
 
     self.plot_area.setCurrentWidget(ls_tab)
     self.statusBar().showMessage(
@@ -631,6 +640,14 @@ class MainWindow(QMainWindow):
           lambda pos, w=widget: self._show_export_menu(w, pos)
       )  
 
+  #------include axial analysis graphs in pdf report-------
+  def _figure_to_imagereader(self, fig, dpi=200):
+      buf = io.BytesIO()
+      fig.savefig(buf, format="png", dpi=dpi, bbox_inches="tight")
+      buf.seek(0)
+      return ImageReader(buf)
+      
+
   def _show_export_menu(self, widget: QWidget, pos: QPoint):
       menu = QMenu(widget)
       a_csv = menu.addAction("Export Axial CSV")
@@ -666,46 +683,106 @@ class MainWindow(QMainWindow):
           QMessageBox.critical(self, "Save Failed", f"could not save CSV:\n{e}")
 
   def export_axial_pdf(self):
-      if not self.last_axial_results:
-          QMessageBox.information(self, "No results", "Run an axial analysis first.")
+      if not getattr(self, "last_axial_results", None):
+          QMessageBox.warning(self, "Export Axial PDF", "Run Axial Analysis first.")
           return
       
-      results = self.last_axial_results
-      pdf_path, _ = QFileDialog.getSaveFileName(self, "Save Axial Report (PDF)", "axial_report.pdf", "PDF (*.pdf)")
-      if not pdf_path:
+      # Where to save
+      default_name = "axial_analysis.pdf"
+      path, _ = QFileDialog.getSaveFileName(self, "Save Axial PDF", default_name, "PDF Files (*.pdf)")
+      if not path:
           return
-      if not pdf_path.lower().endswith(".pdf"):
-          pdf_path += ".pdf"
+      
+      c = rl_canvas.Canvas(path, pagesize=letter)
+      width, height = letter
+      margin = 0.75 * inch
+      cursor_y = height - margin
 
-      try:
-          c = canvas.Canvas(pdf_path, pagesize=letter)
-          width, height = letter
-          y = height - 72  # 1 inch margin
+      # Header
+      c.setFont("Helvetica-Bold", 14)
+      c.drawString(margin, cursor_y, "Axial Load-Settlement Analysis")
+      cursor_y -= 16
 
-          c.setFont("Helvetica-Bold", 14)
-          c.drawString(72, y, "Axial Analysis Report")
-          y -= 24
+      # Meta lines (pile, load, etc)
+      c.setFont("Helvetica", 10)
+      def line(txt):
+          nonlocal cursor_y
+          c.drawString(margin, cursor_y, txt)
+          cursor_y -= 12
 
-          c.setFont("Helvetica", 11)
-          max_set = float(max(results['settlements_m']))
-          max_load = float(max(results['loads_kN']))
-          toe_res = float(results['plots']['toe_res_N'])
+      pile = self.project.get("pile", {})
+      loads = self.project.get("loads", {})
+      line(f'Pile: L={pile.get("length_m", "?")}m, D={pile.get("diameter_m", "?")}m, E={pile.get("elastic_modulus_pa", "?")} Pa')
+      line(f'Axial load (service): {loads.get("axial_kN", "?")} kN')
+      cursor_y -= 6
+      line("Notes: Results generated from current projects state and soil profiles.")
 
-          c.drawString(72, y, f"Max Settlement: {max_set:.4f} m at {max_load:.0f} kN")
-          y -= 16
-          c.drawString(72, y, f"Toe Resistance (final step): {toe_res:.1f} N")
+      # space before plots
+      cursor_y -= 10
 
+      # Draw axial figures captured during run
+      figs = list(getattr(self, "_axial_figures", []))
+      if not figs:
+          try:
+              fig, ax = plt.subplots(figsize=(6,4))
+              s = self.last_axial_results.get("settlement_m", [])
+              q = self.last_axial_results.get("loads_kN", [])
+              # Convert settlement to mm for a nice axis
+              s_mm = [val*1000.0 for val in s]
+              ax.plot(s_mm, q)
+              ax.set_xlabel("Settlement s (mm)")
+              ax.set_ylabel("Load Q (kN)")
+              ax.set_title("Q-s Curve")
+              ax.grid(True)
+              figs = [fig]
+          except Exception:
+              pass
+          
+      if not figs:
+          cursor_y -= 14
+          c.setFont("Helvetica-Oblique", 10)
+          c.drawString(margin, cursor_y, "No plots were generated; run Axial Analysis to generate curves")
           c.showPage()
           c.save()
-          self.statusBar().showMessage(f"Saved: {pdf_path}", 5000)
+          QMessageBox.information(self, "Export Axial PDF", f"Saved: {path}")
+          return
+      
+      # Layout: one figure per page (scaled to fit within margins)
+      max_plot_w = width - 2 * margin
+      max_plot_h = height - 2 * margin - 80
+      for idx, fig in enumerate(figs, start=1):
+          # Start a new page for each figure except the first
+          if idx > 1:
+              c.showPage()
+              cursor_y = height - margin
+              c.setFont("Helvetica-Bold", 14)
+              c.drawString(margin, cursor_y, "Axial Load-Settlement Analsysis")
+              cursor_y -= 24
 
-      except Exception as e:
-          QMessageBox.critical(self, "Save failed", f"Could not save PDF:\n{e}")
+          img = self._figure_to_imagereader(fig, dpi=220)
+
+          # Compute image aspect and scale to fit
+          iw, ih = fig.get_size_inches()
+          aspect = (ih / iw)
+          draw_w = max_plot_w
+          draw_h = draw_w * aspect
+          if draw_h > max_plot_h:
+              draw_h = max_plot_hdraw_w = draw_h / aspect
+
+          x = margin + (max_plot_w - draw_w) / 2.0
+          y = margin + (max_plot_h - draw_h) / 2.0
+
+          c.drawImage(img, x, y, width=draw_w, height=draw_h, preserveAspectRatio=True, anchor='c')
+    
+      c.showPage()
+      c.save()
+      
+      QMessageBox.information(self, "Export Axial PDF", f"Saved: {path}")
+      
+  
   
         
-          
-
-  #--------edit menu handlers----------
+#--------edit menu handlers----------
   def _ensure_project(self):
       if self.project is None:
           self.new_project()
