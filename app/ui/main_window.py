@@ -1237,37 +1237,76 @@ class MainWindow(QMainWindow):
     
     if theme == "dark":
       app.setStyleSheet("""
-        QWidget {background: #232323; color:#eeeeee;}
-        QMenuBar, QMenu { background: #2c2c2c; color: #eeeeee;}
-        QToolTip { color: #eeeeee; background:#444;}
-        QPushButton { background:#3a3a3a; border: 1px solid #555; padding: 6px;}
-        QPushButton:hover {background:#444;}
-        QTextEdit, QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {
-          background:#2b2b2b; border: 1px solid #555; color:#eee;
-        }
-        QTabBar::tab { background:#2c2c2c; padding:6px 10px;}
-        QTabBar::tab:selected {background:#3a3a3a;}
-        QStatusBar {background:#2c2c2c;}
-
-      """)
+        /* Base */
+        QWidget {background: #2f3340; color:#e9edf5;}
+        QToolTip { color: #e9edf5; background:#3a3f4e; border: 1px solid #596073;}
+        
+        /* Top chrome */
+        QMenuBar, QMenu, QToolBar, QStatusBar { background: #3a3f4e; color: #e9edf5;}
+        QMenu::item:selected {background: #4a5161;}
+        QStatusBar::item {border: none;}
+        
+        /* Inputs */
+        QTextEdit, QPlainTextEdit, QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {
+            background: #3a3f4e; color: #e9edf5; border: 1px solid #6a7288; border-radius: 6px; selection-background-color: #58627a; selection-color: #ffffff;}
+        QComboBox QAbstractItemView {background: #3a3f4e; selection-background-color: #58627a;}
+        
+        /* Buttons */
+        QPushButton { background:#41485a; border: 1px solid #6a7288;  border-radius: 8px; padding: 6px 10px;}
+        QPushButton:hover {background:#4a5161;}
+        QPushButton:pressed {background: #424959;}
+        QPushButton:disabled {color: #a6aec2; border-color: #545b6d;}
+                        
+        /* Tabs */
+        QTabWidget::pane {border: 1px solid #596073; border-radius: 8px; top:-1px; background: #2f3340;}
+        QTabBar::tab { background:#3a3f4e; padding:6px 12px; border: 1px solid #596073; border-bottom: none; border-top-left-radius: 8px; border-top-right-radius: 8px; margin-right: 2px;}
+        QTabBar::tab:selected {background:#41485a;}
+                        
+        /* Splitters & frames */
+        QFrame[frameShape="4"], QFrame[frameShape="5"] {background: #596073; max-height: 1px; max-width: 1px;}
+                        
+        /* Scrollbars */
+        QScrollBar:vertical, QScrollBar:horizontal {background: #2f3340; border: none;}
+        QScrollBar::handle:vertical, QScrollBar::handle:horizontal {background: #50586b; border-radius: 6px; min-height: 24px; min-width: 24px;}
+        QScrollBar::handle:hover {background: #5a6277;}
+        QScrollBar::add-page, QScrollBar::sub-page {background: transparent;}
+                        
+        /* Links & selection */
+        a, QLabel[foregroundRole="link"] {color: #8f4bff;}
+        *::selection {background: #58627a; color: #ffffff;}
+        """)
     else:
       app.setStyleSheet("")
 
-    #-----------Matplotlib: light mode for curves-----------
+    # Make Matplotlib also dark if it is suggested in the future
+    """
+    if theme == "dark":
+        mpl.rcParams.update({
+            "figure.facecolor": "#2f3340",
+            "axes.facecolor": "2f3340",
+            "savefig.facecolor": "#2f3340",
+            "axes.edgecolor": "#cfd6e6",
+            "axes.labelcolor": "#e9edf5",
+            "xtick.color": "#cfd6e6",
+            "ytick.color": "#cfd6e6",
+            "grid.color": "#5d6678",
+            "text.color": "#e9edf5",
+            "lines.linewidth": 1.6,
+            "axes.grid": True,
+    
+    })"""
+    
+    # Matplotlib always light
     mpl.rcParams.update(mpl.rcParamsDefault)
     mpl.style.use("default")
     mpl.rcParams.update({
-      "figure.facecolor": "white",
-      "axes.facecolor": "white",
-      "savefig.facecolor": "white",
-      "axes.edgecolor": "black",
-      "axes.labelcolor": "black",
-      "xtick.color": "black",
-      "ytick.color": "black",
-      "grid.color": "#CCCCCC",
+        "figure.facecolor": "white",
+        "axes.facecolor": "white",
+        "savefig.facecolor": "white",
+        "axes.edgecolor": "black",
+        "axes.labelcolor": "black",
+        "xtick.color": "black",
+        "ytick.color": "black",
+        "grid.color": "#CCCCCC",
+        "axes.grid": True,
     })
-      
-      
-
-
-  
