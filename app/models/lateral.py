@@ -82,18 +82,18 @@ def apply_boundary_conditions(D2, D3, A, y, pile: PileProps, cfg: LateralConfig,
 
   #---Head BC if FIXED_HEAD-----
   if cfg.bc == BCType.FIXED_HEAD:
-    # y(0) = 0
+    # y(0) = 0 -> dy(0) = -y(0)
     A[0, :] = 0.0
     A[0, 0] = 1.0
-    rhs_bc[0] = 0.0
+    rhs_bc[0] = -float(y[0])
 
-    #y('(0)=0 ~ (-3y0 + 4y1 - y2)/(2dz) = 0
+    #y('(0)=0 -> (D1@dy)[0] = -(D1@y)[0]
     if n >= 3:
       A[1, :] = 0.0
       A[1, 0] = -3.0/(2*dz)
       A[1, 1] = 4.0/(2*dz)
       A[1, 2] = -1.0/(2*dz)
-      rhs_bc[1] = 0.0
+      rhs_bc[1] = -float((-3*y[0] + 4*y[1] -y[2])/(2*dz))
 
   #---- Tip (free): M(L)=0 and V(L)=0------
   i = n - 1
@@ -101,19 +101,14 @@ def apply_boundary_conditions(D2, D3, A, y, pile: PileProps, cfg: LateralConfig,
   # Enforce y''(L)=0 (curvature -> moment zero)
   if n >= 3:
     A[i, :] = 0.0
-    A[i, i] = -2.0/(dz**2)
-    A[i, i-1] = 1.0/(dz**2)
-    A[i, i-2] = 1.0/(dz**2)
-    rhs_bc[i] = 0.0
+    A[i, :] = EI * D2[i, :]
+    rhs_bc[i] = -float(EI * (D2 @ y)[i])
 
   # Enforce y'''(L)=0 (shear zero) at the row i-1
   if n >= 4:
     A[i-1, :] = 0.0
-    A[i-1, i] = 1.0/(dz**3)
-    A[i-1, i-1] = -3.0/(dz**3)
-    A[i-1, i-2] = 3.0/(dz**3)
-    A[i-1, i-3] = -1.0/(dz**3)
-    rhs_bc[i-1] = 0.0
+    A[i-1, :] = EI * D3[i-1, :]
+    rhs_bc[i-1] = -float(EI * (D3 @ y)[i-1])
 
   return rhs_bc
  
@@ -161,29 +156,22 @@ def lateral_analysis(
       
       # Inject head loads for free-head case
       if cfg.bc == BCType.FREE_HEAD:
+        D2row0 = D2[0, :]
+        D3row0 = D3[0, :]
+
         if abs(lc.H_N) < 1e-6 and abs(lc.M_Nm) < 1e-9:
           A[0, :] = 0.0
           A[0, 0] = 1.0
-          r[0] = 0.0
+          r[0] = -float(y[0])
         else:
-          # Head shear only (free rotation): EI * y'''(0) = H
           A[0, :] = 0.0
-          if n >= 4:
-            # forward-biased third-derivative stencil ar the head
-            A[0, 3] = EI/(dz**3)
-            A[0, 2] = -3*EI/(dz**3)
-            A[0, 1] = 3*EI/(dz**3)
-            A[0, 0] = -EI/(dz**3)
-          r[0] = lc.H_N
+          A[0, :] = EI * D3row0
+          r[0] = float(lc.H_N) - float(EI * (D3 @ y)[0])
 
-          # Optional head moment: EI * y''(0) = M
-          if abs(lc.M_Nm) > 0.0 and n >= 3:
+          if abs(lc.M_Nm) > 0.0:
             A[1, :] = 0.0
-            # second-derivative stencil at the head
-            A[1, 0] = EI/(dz**2)
-            A[1, 1] = -2*EI/(dz**2)
-            A[1, 2] = EI/(dz**2)
-            r[1] = lc.M_Nm
+            A[1, :] = EI * D2row0
+            r[1] = float(lc.M_Nm) - float(EI * (D2 @ y)[0])
 
       # Merge rhs: residual + bc contributions (bc vector already matched rows)
       r = r + rhs_bc  
@@ -202,7 +190,7 @@ def lateral_analysis(
       y += cfg.relax * dy
 
       y = np.nan_to_num(y, nan=0.0, posinf=0.0, neginf=0.0)
-      y = np.clip(y, -0.5 * pile.d_m, 0.5 * pile.d_m)
+      # y = np.clip(y, -0.5 * pile.d_m, 0.5 * pile.d_m)
 
       if np.linalg.norm(dy, ord=np.inf) < cfg.tol:
         break
