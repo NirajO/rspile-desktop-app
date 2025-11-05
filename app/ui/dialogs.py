@@ -136,7 +136,7 @@ class SoilLayerDialog(QDialog):
     self.gamma.setRange(0, 100)
     self.gamma.setDecimals(2)
     self.gamma.setValue(18.0)
-    self.gamma.setSuffix(" kN/m^3")
+    self.gamma.setSuffix(" kN/m³")
 
     # clay-only property
     self.su = QDoubleSpinBox()
@@ -154,7 +154,7 @@ class SoilLayerDialog(QDialog):
     lay.addRow("To depth", self.to_m)
     lay.addRow("Type", self.type)
     lay.addRow("Unit Weight", self.gamma)
-    lay.addRow("Undrained sher (su, clay)", self.su)
+    lay.addRow("Undrained shear (su, clay)", self.su)
     lay.addRow("Friction angle (phi, sand)", self.phi)
 
     btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)

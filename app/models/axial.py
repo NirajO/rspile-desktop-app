@@ -176,9 +176,9 @@ def axial_analysis(pile: Dict, loads: Dict, soil_profile: List[Dict], n_segments
 
     settlements.append(w[0])
     w_final = w # Keep final converged profile of this load step
+    w_prev = w.copy()
 
   #-----------Build plots from the final converged step------------
-  w_final = w_prev
   shear_per_seg_N = np.zeros(n_segments)
   for i in range(n_segments):
     mid_z = z[i] + 0.5 * dz

@@ -97,10 +97,11 @@ def get_py_curve(layer, pile_diameter, depth):
 
   Returns arrays y(m) and p(kN/m)
   """
-  gamma = layer["gamma_kNpm3"]
+  soil_type = str(layer.get("type", "")).strip().lower()
+  gamma = float(layer.get("gamma_kNpm3", 0.0))
   y = np.linspace(0, 0.05 * pile_diameter, 100)
   p = np.zeros_like(y)
-  if layer["type"] == "clay":
+  if soil_type == "clay":
     su = layer["undrained_shear_strength_kPa"]
     if su <= 0:
       su = 1.0  # Minimal default to avoid divison by zero
@@ -115,7 +116,7 @@ def get_py_curve(layer, pile_diameter, depth):
       else:
         p[i] = Pu # Ultimate
 
-  elif layer["type"] == "sand":
+  elif soil_type == "sand":
     phi_deg = layer["phi_deg"]
     phi = math.radians(phi_deg)
     D = pile_diameter
@@ -141,19 +142,32 @@ def get_py_curve(layer, pile_diameter, depth):
     A = max(3 - 0.8 * z / D, 0.9) # Reduction factorD
     for i, yi in enumerate(y):
       p[i] = A * Pu * math.tanh((k * z / Pu) * yi)
+    
+    if not (soil_type == "clay" or soil_type == "sand"):
+      k_lin = 5e6
+      p = k_lin * y / 1000.0
   return y, p
 
-def make_py_spring (py_backbone: Callable[[float, float], float]) -> Callable[[float, float], Tuple[float, float]]:
+def make_py_spring(py_backbone):
   """
   Wrap a p-y backbone p = f(y, z) into a function returning (p, dpdy).
   Uses a small symmetric diff for tangent
   y in meters (lateral diflection), p in N/m (soil reaction per unit length)
   """
-  def spring(y: float, z:float) -> Tuple[float, float]:
-    p = py_backbone(y, z)
-    eps = max(1e-9, abs(y) * 1e-6)
-    p_plus = py_backbone(y + eps, z)
-    p_minus = py_backbone(y- eps, z)
-    dpdy = (p_plus - p_minus) / (2.0 * eps)
-    return p, max(dpdy, 0.0)  # clamp negative tangent
+  def spring(y, z):
+    y = float(y)
+    z = float(z)
+
+    p = float(py_backbone(y, z))
+
+    dy = max(1e-7, min(1e-3, 0.01 * abs(y) if abs(y) > 1e-6 else 1e-5))
+
+    p_plus = float(py_backbone(y + dy, z))
+    p_minus = float(py_backbone(y - dy, z))
+    k = (p_plus - p_minus) / (2.0 * dy)
+
+    if not (np.isfinite(k)) or abs(k) < 1e-6:
+      k = 1e4
+
+    return p, k
   return spring

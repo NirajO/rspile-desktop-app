@@ -135,7 +135,7 @@ def lateral_analysis(
   D2, D3, D4 = finite_diff_mats(n, dz)
 
   # State across Load steps
-  y_prev = np.zeros(n)
+  y_prev = 1e-6 * np.exp(-z / max(1e-9, 0.2 * L))
 
   results_per_step: list[LateralResults] = []
   head_curve: list[tuple[float, float]] = []
@@ -148,6 +148,9 @@ def lateral_analysis(
       k = np.zeros(n)
       for i in range(n):
         p[i], k[i] = py_spring(y[i], z[i])
+      p = np.nan_to_num(p, nan=0.0, posinf=0.0, neginf=0.0)
+      k = np.nan_to_num(k, nan=1e5, posinf=1e9, neginf=1e5)
+      k = np.clip(k, 1e3, 1e9)
 
       # Newton system: (EI*D4 - diag(k)) dy = p - EI*D4*y
       A = EI * D4 - np.diag(k)
@@ -158,34 +161,36 @@ def lateral_analysis(
       
       # Inject head loads for free-head case
       if cfg.bc == BCType.FREE_HEAD:
-        #enforce M(0)=0: use D2 stencil row at 0
-        A[0, :] = 0.0
-        # approximate y''(0)=0 with [y0 - 2y1 + y2]/dz^2 = 0
-        if n >= 3:
-          A[0, 0] = 1.0/(dz**2)
-          A[0, 1] = -2.0/(dz**2)
-          A[0, 2] = 1.0/(dz**2)
-        r[0] = 0.0
-        # enforce V(0)=H: EI*y'''(0)=H -> add equation using D3-like stencil in A[1, :]
-        A[1, :] = 0.0
-        if n >= 4:
-          # simple forward-biased third-derivative
-          A[1, 3] = EI/(dz**3)
-          A[1, 2] = -3*EI/(dz**3)
-          A[1, 1] = 3*EI/(dz**3)
-          A[1, 0] = -EI/(dz**3)
-        r[1] = lc.H_N
-
-        # If moment is also applied at head, superimpose via curvature: EI*y''(0)=M
-        if abs(lc.M_Nm) > 0.0 and n >= 3:
+        if abs(lc.H_N) < 1e-6 and abs(lc.M_Nm) < 1e-9:
           A[0, :] = 0.0
-          A[0, 0] = EI/(dz**2)
-          A[0, 1] = -2*EI/(dz**2)
-          A[0, 2] = EI/(dz**2)
-          r[0] = lc.M_Nm
+          A[0, 0] = 1.0
+          r[0] = 0.0
+        else:
+          # Head shear only (free rotation): EI * y'''(0) = H
+          A[0, :] = 0.0
+          if n >= 4:
+            # forward-biased third-derivative stencil ar the head
+            A[0, 3] = EI/(dz**3)
+            A[0, 2] = -3*EI/(dz**3)
+            A[0, 1] = 3*EI/(dz**3)
+            A[0, 0] = -EI/(dz**3)
+          r[0] = lc.H_N
+
+          # Optional head moment: EI * y''(0) = M
+          if abs(lc.M_Nm) > 0.0 and n >= 3:
+            A[1, :] = 0.0
+            # second-derivative stencil at the head
+            A[1, 0] = EI/(dz**2)
+            A[1, 1] = -2*EI/(dz**2)
+            A[1, 2] = EI/(dz**2)
+            r[1] = lc.M_Nm
 
       # Merge rhs: residual + bc contributions (bc vector already matched rows)
-      r = r + rhs_bc        
+      r = r + rhs_bc  
+
+      A[np.isnan(A)] = 0.0
+      r = np.nan_to_num(r, nan=0.0, posinf=0.0, neginf=0.0)
+      A += (1e-9 * EI) * np.eye(n)      
 
       # Solver for increment
       try:
@@ -195,6 +200,9 @@ def lateral_analysis(
         dy = np.linalg.lstsq(A + 1e-9*np.eye(n), r, rcond=None)[0]
 
       y += cfg.relax * dy
+
+      y = np.nan_to_num(y, nan=0.0, posinf=0.0, neginf=0.0)
+      y = np.clip(y, -0.5 * pile.d_m, 0.5 * pile.d_m)
 
       if np.linalg.norm(dy, ord=np.inf) < cfg.tol:
         break
@@ -225,6 +233,7 @@ def lateral_analysis(
   return{
     "steps": results_per_step,
     "head_curve": head_curve,
+    "meta": {"EI_Nm2": EI, "length_m": L, "n_nodes": n}
   }
 
 

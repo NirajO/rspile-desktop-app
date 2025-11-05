@@ -12,12 +12,12 @@ import pathlib, io
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib as mpl
+import pandas as pd
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas, NavigationToolbar2QT as NavigationToolbar
 from PySide6.QtWidgets import (QApplication, QMainWindow, QMenu, QHBoxLayout, QWidget, QVBoxLayout, QLabel, QPushButton, QFileDialog, QMessageBox, QStatusBar, QTextEdit, QTabWidget, QToolBar, QDockWidget, QListWidget, QListWidgetItem, QFrame)
 from PySide6.QtCore import Qt, QPoint, QSettings
 from PySide6.QtGui import QAction, QKeySequence, QIcon
 from ..models.curves import get_tz_curve, get_qz_curve, get_py_curve, make_py_spring
-import pandas as pd
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.units import inch
 from reportlab.lib.utils import ImageReader
@@ -87,6 +87,9 @@ class MainWindow(QMainWindow):
     self._refresh_recent_list()
 
     self._axial_figures = []
+
+    self._lateral_figures = []
+    self.last_lateral_out = None
 
   #---------Menus---------
   def _build_menu(self):
@@ -547,6 +550,17 @@ class MainWindow(QMainWindow):
         QMessageBox.warning(self, "Missing Soil Data", "Please define soil layers first.")
         return
     
+    def make_export_bar():
+        bar = QHBoxLayout()
+        btn_csv = QPushButton("Save Lateral CSV")
+        btn_pdf = QPushButton("Save Lateral PDF")
+        btn_csv.clicked.connect(self.export_lateral_csv)
+        btn_pdf.clicked.connect(self.export_lateral_pdf)
+        bar.addWidget(btn_csv)
+        bar.addWidget(btn_pdf)
+        bar.addStretch(1)
+        return bar
+    
     def layer_at_depth(depth_m: float):
         for layer in soil_layers:
             if layer.get("from_m", 0.0) <= depth_m < layer.get("to_m", 0.0):
@@ -558,13 +572,16 @@ class MainWindow(QMainWindow):
         y_vals, p_vals_kNm = get_py_curve(lyr, D, z_val)
         
         if callable(y_vals) or callable(p_vals_kNm):
+            print(f"[p-y] invalid curve (callable) at z={z_val:.2f} m, layer={lyr.get('type')}")
             return 0.0
         try:
             y_np = np.asarray(y_vals, dtype=float).ravel()
             p_np = np.asarray(p_vals_kNm, dtype=float).ravel()
-        except Exception:
+        except Exception as e:
+            print(f"[p-y] exception building curve at z={z_val:.2f} m, layer={lyr.get('type')}: {e}")
             return 0.0
         if y_np.size == 0 or p_np.size == 0 or y_np.size != p_np.size:
+            print(f"[p-y] bad sizes at z={z_val:.2f} m (|y|={y_np.size}, |p|={p_np.size}), layer={lyr.get('type')}")
             return 0.0
         
         order = np.argsort(y_np)
@@ -577,14 +594,22 @@ class MainWindow(QMainWindow):
 
     py_spring = make_py_spring(py_backbone)
 
+    for z_test in [0.0, 0.5*L, 0.9*L]:
+        p_test, k_test = py_spring(1e-3, z_test)
+        print(f"[probe] z={z_test:.2f} m -> p={p_test:.1f} N/m, k={k_test:.1f} N/m^2")
+
     # Define Load steps (kN -> N)
-    steps = [LateralLoadCase(H_N=h * 1e3) for h in [0, 200, 400, 600]]
+    H_user_kN = float((self.project.get("loads") or {}).get("lateral_kN", 400.0))
+    grid = np.linspace(0.0, H_user_kN, 4)
+    steps = [LateralLoadCase(H_N=float(h) * 1e3) for h in grid]
 
     # Solver configuration
-    cfg = LateralConfig(bc=BCType.FREE_HEAD, max_iters=60, tol=1e-7, relax=0.8)
+    cfg = LateralConfig(bc=BCType.FREE_HEAD, max_iters=80, tol=1e-6, relax=0.8)
 
     # Run analysis
     out = lateral_analysis(pile, steps, py_spring, cfg)
+    self.last_lateral_out = out
+    self._lateral_figures = []
 
     pairs = out.get("head_curve", [])
     if not pairs:
@@ -597,18 +622,24 @@ class MainWindow(QMainWindow):
 
     fig1, ax1 = plt.subplots(figsize=(9, 5), constrained_layout=True)
     ax1.plot(y_head_mm, H_kN, marker="o", linewidth=2)
-    ax1.set_title("Lateral Load-Deflection")
+    ax1.set_title("Lateral Load-Deflection (H up to {grid[-1]:.0f} kN)")
     ax1.set_xlabel("Head Deflection (mm)")
     ax1.set_ylabel("Applied Lateral Load H (kN)")
     ax1.grid(True, alpha=0.35)
 
     canvas1 = FigureCanvas(fig1)
+    try:
+        self._attach_export_context_menu(canvas1, kind="lateral")
+    except TypeError:
+        self._attach_export_context_menu(canvas1)
     tab1 = QWidget()
     vbox1 = QVBoxLayout(tab1)
     vbox1.setContentsMargins(6, 6, 6, 6)
     vbox1.addWidget(NavigationToolbar(canvas1, tab1))
     vbox1.addWidget(canvas1)
+    vbox1.addLayout(make_export_bar())
     self.plot_area.addTab(tab1, "Lateral H-y")
+    self._lateral_figures.append(fig1)
     
 
     #-------Plot Deflection vs Depth for Last Step---------
@@ -616,6 +647,10 @@ class MainWindow(QMainWindow):
         QMessageBox.warning(self, "No Data", "No step results to plot.")
         return
     last = out["steps"][-1]
+    print("Lateral post max |y|: ", float(np.max(np.abs(last.y_m))))
+    print("Lateral post max |M| :(", float(np.max(np.abs(last.M_Nm))))
+    print("Lateral post max |V|: ", float(np.max(np.abs(last.V_N))))
+
     fig2, ax2 = plt.subplots(figsize=(9, 5), constrained_layout=True)
     ax2.plot(last.y_m * 1e3, last.z_m, linewidth=2)
     ax2.invert_yaxis()
@@ -624,20 +659,72 @@ class MainWindow(QMainWindow):
     ax2.grid(True, alpha=0.35)
 
     canvas2 = FigureCanvas(fig2)
+    try:
+        self._attach_export_context_menu(canvas2, kind="lateral")
+    except TypeError:
+        self._attach_export_context_menu(canvas2)
     tab2 = QWidget()
     vbox2 = QVBoxLayout(tab2)
     vbox2.setContentsMargins(6, 6, 6, 6)
     vbox2.addWidget(NavigationToolbar(canvas2, tab2))
     vbox2.addWidget(canvas2)
+    vbox2.addLayout(make_export_bar())
     self.plot_area.addTab(tab2, "Deflection vs Depth")
+    self._lateral_figures.append(fig2)
 
     self.plot_area.setCurrentWidget(tab1)
 
+    #------Moment & Shear vs Depth (derived from deflection)-------
+    z = last.z_m
+    y = last.y_m
+    M = last.M_Nm
+    V = last.V_N
+    
+    # Moment vs Depth
+    figM, axM = plt.subplots(figsize=(9, 5), constrained_layout=True)
+    axM.plot(M / 1e3, z, linewidth=2)
+    axM.invert_yaxis()
+    axM.set_xlabel("Moment (kN.m)")
+    axM.set_ylabel("Depth (m)")
+    axM.set_title("Moment vs Depth")
+    axM.grid(True, alpha=0.35)
+
+    canvasM = FigureCanvas(figM)
+    self._attach_export_context_menu(canvasM, kind="lateral")
+    tabM = QWidget()
+    vM = QVBoxLayout(tabM)
+    vM.setContentsMargins(6,6,6,6)
+    vM.addWidget(NavigationToolbar(canvasM, tabM))
+    vM.addWidget(canvasM)
+    vM.addLayout(make_export_bar())
+    self.plot_area.addTab(tabM, "Moment vs Depth")
+    self._lateral_figures.append(figM)
+
+    # Shear vs Depth
+    figV, axV = plt.subplots(figsize=(9, 5), constrained_layout=True)
+    axV.plot(V / 1e3, z, linewidth=2)
+    axV.invert_yaxis()
+    axV.set_xlabel("Shear (kN)")
+    axV.set_ylabel("Depth (m)")
+    axV.set_title("Shear vs Depth")
+    axV.grid(True, alpha=0.35)
+
+    canvasV = FigureCanvas(figV)
+    self._attach_export_context_menu(canvasV, kind="lateral")
+    tabV = QWidget()
+    vV = QVBoxLayout(tabV)
+    vV.setContentsMargins(6,6,6,6)
+    vV.addWidget(NavigationToolbar(canvasV, tabV))
+    vV.addWidget(canvasV)
+    vV.addLayout(make_export_bar())
+    self.plot_area.addTab(tabV, "Shear vs Depth (Lateral)")
+    self._lateral_figures.append(figV)
+
   #---------Right click export menu------------------
-  def _attach_export_context_menu(self, widget: QWidget):
+  def _attach_export_context_menu(self, widget: QWidget, kind: str = "axial"):
       widget.setContextMenuPolicy(Qt.CustomContextMenu)
       widget.customContextMenuRequested.connect(
-          lambda pos, w=widget: self._show_export_menu(w, pos)
+          lambda pos, w=widget, k=kind: self._show_export_menu(w, pos, k)
       )  
 
   #------include axial analysis graphs in pdf report-------
@@ -647,16 +734,20 @@ class MainWindow(QMainWindow):
       buf.seek(0)
       return ImageReader(buf)
       
-
-  def _show_export_menu(self, widget: QWidget, pos: QPoint):
+  def _show_export_menu(self, widget: QWidget, pos: QPoint, kind: str):
       menu = QMenu(widget)
-      a_csv = menu.addAction("Export Axial CSV")
-      a_pdf = menu.addAction("Export Axial PDF")
+      if kind == "lateral":
+          a_csv = menu.addAction("Export Lateral CSV")
+          a_pdf = menu.addAction("Export Lateral PDF")
+      else:
+          a_csv = menu.addAction("Export Axial CSV")
+          a_pdf = menu.addAction("Export Axial PDF")
       chosen = menu.exec(widget.mapToGlobal(pos))
       if chosen == a_csv:
-          self.export_axial_csv()
+        (self.export_lateral_csv if kind == "lateral" else self.export_axial_csv)()
       elif chosen == a_pdf:
-          self.export_axial_pdf()
+        (self.export_lateral_pdf if kind == "lateral" else self.export_axial_pdf)()
+      
 
   #---------Export Handlers------------
   def export_axial_csv(self):
@@ -681,6 +772,85 @@ class MainWindow(QMainWindow):
           self.statusBar().showMessage(f"Saved: {csv_path}", 5000)
       except Exception as e:
           QMessageBox.critical(self, "Save Failed", f"could not save CSV:\n{e}")
+
+  def export_lateral_csv(self):
+    if not getattr(self, "last_lateral_out", None):
+        QMessageBox.information(self, "Export Lateral CSV", "Run Lateral Analysis First.")
+        return
+
+    out = self.last_lateral_out
+    steps = out.get("steps", [])
+    if not steps:
+        QMessageBox.information(self, "Export Lateral CSV", "No step results to export.")
+        return
+    
+    def _get(step, key, default=None):
+        if isinstance(step, dict):
+            return step.get(key, default)
+        return getattr(step, key, default)
+
+    # last step arrays
+    last = steps[-1]
+    z = np.asarray(getattr(last, "z_m", []), dtype=float)
+    y = np.asarray(getattr(last, "y_m", []), dtype=float)
+    slope = np.asarray(getattr(last, "theta_rad", []), dtype=float)
+    M = np.asarray(getattr(last, "M_Nm", []), dtype=float)
+    V = np.asarray(getattr(last, "V_N", []), dtype=float)
+    p = np.asarray(getattr(last, "p_N_per_m", []), dtype=float)
+
+    if z.size == 0:
+        QMessageBox.critical(self, "Export Lateral CSV", "Solver returned no depth array. Re-run analysis")
+        return
+
+    def _clean(a, n_ref):
+        a = np.asarray(a, dtype=float).reshape(-1)
+        if a.size != n_ref:
+            out = np.zeros(n_ref, dtype=float)
+            out[:min(a.size, n_ref)] = a[:min(a.size, n_ref)]
+            a = out
+        return np.nan_to_num(a, nan=0.0, posinf=0.0, neginf=0.0)
+    
+
+    n = z.size
+    y = _clean(y, n)
+    slope = _clean(slope, n)
+    M = _clean(M, n)
+    V = _clean(V, n)
+    p = _clean(p, n)
+
+    # EI for curvature calculation
+    EI = float(out.get("meta", {}).get("EI_Nm2", 0.0))
+    if not np.isfinite(EI) or EI <= 0.0:
+        # fallback from current pile if meta is missing
+        pile = (self.project or {}).get("pile", {})
+        D = float(pile.get("diameter_m", 0.0))
+        E = float(pile.get("elastic_modulus_pa", 0.0))
+        I = (np.pi * (D ** 4)) / 64.0 if D > 0 else 0.0
+        EI = E * I if (E > 0 and I > 0) else 1.0
+
+    curvature = np.nan_to_num(M / EI, nan=0.0, posinf=0.0, neginf=0.0)
+
+    df = pd.DataFrame({
+        "Depth_m": z,
+        "Deflection_m": y,
+        "Slope_rad": slope,
+        "Curvature_1_per_m": curvature,
+        "Moment_Nm": M,
+        "Shear_N": V,
+        "SoilReaction_N_per_m": p,
+    })
+
+    path, _ = QFileDialog.getSaveFileName(self, "Save Lateral Results CSV", "lateral_results_csv", "CSV (*.csv)")
+    if not path:
+        return
+    if not path.lower().endswith(".csv"):
+        path += ".csv"
+
+    try:
+        df.to_csv(path, index=False)
+        self.statusBar().showMessage(f"Saved: {path}", 5000)
+    except Exception as e:
+        QMessageBox.critical(self, "Save Failed", f"Could not save CSV:\n{e}")
 
   def export_axial_pdf(self):
       if not getattr(self, "last_axial_results", None):
@@ -767,7 +937,8 @@ class MainWindow(QMainWindow):
           draw_w = max_plot_w
           draw_h = draw_w * aspect
           if draw_h > max_plot_h:
-              draw_h = max_plot_hdraw_w = draw_h / aspect
+              draw_h = max_plot_h
+              draw_w = draw_h / aspect
 
           x = margin + (max_plot_w - draw_w) / 2.0
           y = margin + (max_plot_h - draw_h) / 2.0
@@ -778,10 +949,146 @@ class MainWindow(QMainWindow):
       c.save()
       
       QMessageBox.information(self, "Export Axial PDF", f"Saved: {path}")
+
+
+  def export_lateral_pdf(self):
+      if not getattr(self, "last_lateral_out", None):
+          QMessageBox.warning(self, "Export Lateral PDF", "Run Lateral Analysis first.")
+          return
+      
+      path, _ = QFileDialog.getSaveFileName(self, "Save Lateral PDF", "lateral_analysis.pdf", "PDF (*.pdf)")
+      if not path:
+          return
+      
+      c = rl_canvas.Canvas(path, pagesize=letter)
+      width, height = letter
+      margin = 0.75 * inch
+      cursor_y = height - margin
+
+      # Header
+      c.setFont("Helvetica-Bold", 14)
+      c.drawString(margin, cursor_y, "Lateral Analysis Report")
+      cursor_y -= 16
+
+      # Meta datas
+      c.setFont("Helvetica", 10)
+      def line(txt):
+          nonlocal cursor_y
+          c.drawString(margin, cursor_y, txt)
+          cursor_y -= 12
+
+      pile = self.project.get("pile", {})
+      loads = self.project.get("loads", {})
+      line(f'Pile: L={pile.get("length_m", "?")} m, D={pile.get("diameter_m", "?")} m, E={pile.get("elastic_modulus_pa", "?")} Pa ')
+      line(f'Head Lateral Loads (kN): {loads.get("lateral_kN", "-")}')
+      cursor_y -= 6
+      line("Notes: Results generated from current project state and soil profiles.")
+
+      # space before plots
+      cursor_y -= 10
+
+      # Figures captured during lateral analysis
+      figs = list(getattr(self, "_lateral_figures", []))
+
+      # If none captured, synthesize key plots from last step
+      if not figs and self.last_lateral_out.get("steps"):
+          last = self.last_lateral_out["steps"][-1]
+          z = np.asarray(last.z_m, dtype=float)
+          y = np.asarray(last.y_m, dtype=float)
+
+          # H-y (head) curve if present
+          pairs = self.last_lateral_out.get("head_curve", [])
+          if pairs:
+              figHy, axHy = plt.subplots(figsize=(6, 4))
+              H_kN = np.array([h for (h, y0) in pairs]) / 1e3
+              y_mm = np.array([y0 for (h, y0) in pairs]) * 1e3
+              axHy.plot(y_mm, H_kN, marker="o")
+              axHy.set_xlabel("Head Deflection (mm)")
+              axHy.set_ylabel("Head Load H (kN)")
+              axHy.set_title("Lateral H-y")
+              axHy.grid(True)
+              figs.append(figHy)
+
+          # Deflection, Moment, Shear
+          if z.size >= 3:
+              dz = float(np.mean(np.diff(z)))
+              dy_dz = np.gradient(y, dz)
+              d2y_dz2 = np.gradient(dy_dz, dz)
+              D = float(pile.get("diameter_m", 0.0))
+              E = float(pile.get("elastic_modulus_pa", 0.0))
+              I = 3.14159265358979 * (D ** 4) / 64.0
+              EI = E * I
+              M = -EI * d2y_dz2
+              V = np.gradient(M, dz)
+
+              figDefl, axDefl = plt.subplots(figsize=(6,4))
+              axDefl.plot(y * 1e3, z)
+              axDefl.invert_yaxis()
+              axDefl.set_xlabel("Deflection (mm)")
+              axDefl.set_ylabel("Depth (m)")
+              axDefl.set_title("Deflection vs Depth")
+              axDefl.grid(True)
+              figs.append(figDefl)
+
+              figM, axM = plt.subplots(figsize=(6,4))
+              axM.plot(M / 1e3, z)
+              axM.invert_yaxis()
+              axM.set_xlabel("Moment (kN.m)")
+              axM.set_ylabel("Depth (m)")
+              axM.set_title("Moment vs Depth")
+              axM.grid(True)
+              figs.append(figM)
+
+              figV, axV = plt.subplots(figsize=(6, 4))
+              axV.plot(V / 1e3, z)
+              axV.invert_yaxis()
+              axV.set_xlabel("Shear (kN)")
+              axV.set_ylabel("Depth (m)")
+              axV.set_title("Shear vs Depth")
+              axV.grid(True)
+              figs.append(figV)
+
+      if not figs:
+        cursor_y -= 14
+        c.setFont("Helvetica-Oblique", 10)
+        c.drawString(margin, cursor_y, "No plots were generated", "Run Lateral Analysis to generate curves.")
+        c.showPage()
+        c.save()
+        QMessageBox.information(self, "Export Lateral PDF", f"Saved: {path}")
+        return
+      
+      # draw figures (one per page)
+      max_plot_w = width - 2 * margin
+      max_plot_h = height - 2 * margin - 80
+
+      for idx, fig in enumerate(figs, start=1):
+          if idx > 1:
+              c.showPage()
+              cursor_y = height - margin
+              c.setFont("Helvetica-Bold", 14)
+              c.drawString(margin, cursor_y, "Lateral Analysis Report")
+              cursor_y -= 24
+
+          img = self._figure_to_imagereader(fig, dpi=220)
+          iw, ih = fig.get_size_inches()
+          aspect = ih / iw
+          draw_w = max_plot_w
+          draw_h = draw_w * aspect
+          if draw_h > max_plot_h:
+              draw_h = max_plot_h
+              draw_w = draw_h / aspect
+
+          x = margin + (max_plot_w - draw_w) / 2.0
+          y = margin + (max_plot_h - draw_h) / 2.0
+          c.drawImage(img, x, y, width=draw_w, height=draw_h, preserveAspectRatio=True)
+
+      c.showPage()
+      c.save()
+      QMessageBox.information(self, "Export Lateral PDF", f"Saved: {path}")
+
+
       
   
-  
-        
 #--------edit menu handlers----------
   def _ensure_project(self):
       if self.project is None:
