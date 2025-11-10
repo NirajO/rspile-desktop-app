@@ -91,10 +91,22 @@ class MainWindow(QMainWindow):
     self._lateral_figures = []
     self.last_lateral_out = None
 
+    # Restore window geometry and dock/toolbar layout
+    s = QSettings("RSPile", "StudentEdition")
+    g = s.value("win/geo")
+    st = s.value("win/state")
+    if g is not None:
+        self.restoreGeometry(g)
+    if st is not None:
+        self.restoreState(st, 1)
+
+    self.setAcceptDrops(True)
+
   #---------Menus---------
   def _build_menu(self):
       #----------- Toolbar ---------------
       tb = QToolBar("Main")
+      tb.setObjectName("MainToolbar")
       tb.setMovable(False)
       self.addToolBar(Qt.TopToolBarArea, tb)
 
@@ -288,7 +300,7 @@ class MainWindow(QMainWindow):
 
   def open_project(self):
         fn, _ = QFileDialog.getOpenFileName(
-          self, "Open Project", ".", "RSPile (*.rspile.json)"
+          self, "Open Project", ".", "RSPile (*.rspile.json);;All files (*)"
         )
         if not fn:
           return
@@ -308,15 +320,15 @@ class MainWindow(QMainWindow):
           fn, _ = QFileDialog.getSaveFileName(
             self, "Save Project As", ".", "RSPile (*.rspile.json)"
           )
-          if not fn:
-            return
+          if not fn.lower().endswith(".rspile.json"):
+            fn += ".rspile.json"
           try:
             save_project(self.project, fn)
             self.statusBar().showMessage("Project Saved", 3000)
             self._set_dirty(False)
+            self._push_recent_file(fn)
           except Exception as e:
             QMessageBox.critical(self, "Save Failed", f"Could not save file.\n\n{e}")
-          self._push_recent_file(fn)
 
   def _recent_files(self) -> list[str]:
       s = QSettings("RSPile", "StudentEdition")
@@ -355,6 +367,21 @@ class MainWindow(QMainWindow):
   def _set_dirty(self, value: bool = True):
       self._dirty = bool(value)
       self._update_status_bar()
+
+  def dragEnterEvent(self, e):
+      if e.mimeData().hasUrls():
+          for u in e.mimeData().urls():
+              if u.toLocalFile().lower().endswith(".rspile.json"):
+                  e.acceptProposedAction()
+                  return
+      e.ignore()
+
+  def dropEvent(self, e):
+      for u in e.mimeData().urls():
+          p = u.toLocalFile()
+          if p.lower().endswith(".rspile-json"):
+              self._open_path(p)
+              break
 
   def generate_curves(self):
             if self.project is None:
@@ -535,7 +562,7 @@ class MainWindow(QMainWindow):
          return
 
     if L <= 0 or D <= 0 or E <= 0:
-        QMessageBox.critical(self, "Inavlid Input", "Pile length, diameter, or E must be positive.")
+        QMessageBox.critical(self, "Invalid Input", "Pile length, diameter, or E must be positive.")
         return
 
     #----Compute stiffness (EI)------
@@ -622,7 +649,7 @@ class MainWindow(QMainWindow):
 
     fig1, ax1 = plt.subplots(figsize=(9, 5), constrained_layout=True)
     ax1.plot(y_head_mm, H_kN, marker="o", linewidth=2)
-    ax1.set_title("Lateral Load-Deflection (H up to {grid[-1]:.0f} kN)")
+    ax1.set_title(f"Lateral Load-Deflection (H up to {grid[-1]:.0f} kN)")
     ax1.set_xlabel("Head Deflection (mm)")
     ax1.set_ylabel("Applied Lateral Load H (kN)")
     ax1.grid(True, alpha=0.35)
@@ -895,7 +922,7 @@ class MainWindow(QMainWindow):
       if not figs:
           try:
               fig, ax = plt.subplots(figsize=(6,4))
-              s = self.last_axial_results.get("settlement_m", [])
+              s = self.last_axial_results.get("settlements_m", [])
               q = self.last_axial_results.get("loads_kN", [])
               # Convert settlement to mm for a nice axis
               s_mm = [val*1000.0 for val in s]
@@ -1051,7 +1078,7 @@ class MainWindow(QMainWindow):
       if not figs:
         cursor_y -= 14
         c.setFont("Helvetica-Oblique", 10)
-        c.drawString(margin, cursor_y, "No plots were generated", "Run Lateral Analysis to generate curves.")
+        c.drawString(margin, cursor_y, "No plots were generated. Run Lateral Analysis to generate curves.")
         c.showPage()
         c.save()
         QMessageBox.information(self, "Export Lateral PDF", f"Saved: {path}")
@@ -1123,6 +1150,12 @@ class MainWindow(QMainWindow):
           self.project["soil_profile"].sort(key=lambda L: L.get("from_m", 0.0))
           self.refresh_ui()
           self._set_dirty(True)
+    
+  def closeEvent(self, e):
+      s = QSettings("RSPile", "StudentEdition")
+      s.setValue("win/geo", self.saveGeometry())
+      s.setValue("win/state", self.saveState(1))
+      super().closeEvent(e)
 
   def _close_plot_tab(self, index: int):
       w = self.plot_area.widget(index)
