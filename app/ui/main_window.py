@@ -379,7 +379,7 @@ class MainWindow(QMainWindow):
   def dropEvent(self, e):
       for u in e.mimeData().urls():
           p = u.toLocalFile()
-          if p.lower().endswith(".rspile-json"):
+          if p.lower().endswith(".rspile.json"):
               self._open_path(p)
               break
 
@@ -543,23 +543,23 @@ class MainWindow(QMainWindow):
   
   def run_lateral_analysis(self):
     if self.project is None:
-         QMessageBox.warning(self, "No Project", "Create or open a project first.")
-         return
+        QMessageBox.warning(self, "No Project", "Create or open a project first.")
+        return
      
-     #------Gathers pile data------
+    #------Gathers pile data------
     pile_data = self.project.get("pile", {})
     if not pile_data:
-         QMessageBox.warning(self, "Missing Data", "Please define pile properties first.")
-         return
+        QMessageBox.warning(self, "Missing Data", "Please define pile properties first.")
+        return
      
     try: 
-         L = float(pile_data.get("length_m", 0))
-         D = float(pile_data.get("diameter_m", 0))
-         E = float(pile_data.get("elastic_modulus_pa", 0))
+        L = float(pile_data.get("length_m", 0))
+        D = float(pile_data.get("diameter_m", 0))
+        E = float(pile_data.get("elastic_modulus_pa", 0))
 
     except (ValueError, TypeError):
-         QMessageBox.critical(self, "Invalid Data", "Pile parameters must be numeric.")
-         return
+        QMessageBox.critical(self, "Invalid Data", "Pile parameters must be numeric.")
+        return
 
     if L <= 0 or D <= 0 or E <= 0:
         QMessageBox.critical(self, "Invalid Input", "Pile length, diameter, or E must be positive.")

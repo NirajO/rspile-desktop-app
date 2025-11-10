@@ -32,7 +32,7 @@ class LateralConfig:
   bc: BCType = BCType.FREE_HEAD
   max_iters: int = 40
   tol: float = 1e-6
-  relax: float = 1.0    #0.5-1.0 helps convergence in very soft soils
+  relax: float = 0.5    #0.5-1.0 helps convergence in very soft soils
 
 @dataclass
 class LateralResults:
@@ -69,7 +69,7 @@ def finite_diff_mats(n: int, dz: float) -> Tuple[np.ndarray, np.ndarray, np.ndar
   D4 = D2 @ D2
   return D2, D3, D4
 
-def apply_boundary_conditions(D2, D3, A, y, pile: PileProps, cfg: LateralConfig, lc: LateralLoadCase, EI, dz):
+def apply_boundary_conditions(D2: np.ndarray, D3: np.ndarray, A: np.ndarray, y: np.ndarray, pile: PileProps, cfg: LateralConfig, lc: LateralLoadCase, EI, dz) -> np.ndarray:
   """
   Enforce head/tip BCs on matrices by replacing corresponding rows.
   Head (z=0):
@@ -88,25 +88,22 @@ def apply_boundary_conditions(D2, D3, A, y, pile: PileProps, cfg: LateralConfig,
     rhs_bc[0] = -float(y[0])
 
     #y('(0)=0 -> (D1@dy)[0] = -(D1@y)[0]
-    if n >= 3:
+    if n >= 2:
       A[1, :] = 0.0
-      A[1, 0] = -3.0/(2*dz)
-      A[1, 1] = 4.0/(2*dz)
-      A[1, 2] = -1.0/(2*dz)
-      rhs_bc[1] = -float((-3*y[0] + 4*y[1] -y[2])/(2*dz))
+      A[1, 0] = -1.0 / dz
+      A[1, 1] = 1.0 / dz
+      rhs_bc[1] = -float((y[1] - y[0]) / dz)
 
   #---- Tip (free): M(L)=0 and V(L)=0------
   i = n - 1
 
   # Enforce y''(L)=0 (curvature -> moment zero)
   if n >= 3:
-    A[i, :] = 0.0
     A[i, :] = EI * D2[i, :]
     rhs_bc[i] = -float(EI * (D2 @ y)[i])
 
   # Enforce y'''(L)=0 (shear zero) at the row i-1
   if n >= 4:
-    A[i-1, :] = 0.0
     A[i-1, :] = EI * D3[i-1, :]
     rhs_bc[i-1] = -float(EI * (D3 @ y)[i-1])
 
@@ -137,6 +134,8 @@ def lateral_analysis(
 
   for _, lc in enumerate(load_steps, 1):
     y = y_prev.copy()
+    converged = False
+
     for _ in range(cfg.max_iters):
       # Soil reaction and tangent at current y
       p = np.zeros(n)
@@ -152,7 +151,12 @@ def lateral_analysis(
       r = p - EI * (D4 @ y) 
 
       # Boundary conditions
-      rhs_bc = apply_boundary_conditions(D2.copy(), D3.copy(), A, y, pile, cfg, lc, EI, dz)
+      rhs_bc = apply_boundary_conditions(D2, D3, A, y, pile, cfg, lc, EI, dz)
+
+      # Apply BC residual: where rhs_bc is non-zero, override the PDE residual
+      bc_mask = rhs_bc != 0.0
+      r[bc_mask] = rhs_bc[bc_mask] 
+      
       
       # Inject head loads for free-head case
       if cfg.bc == BCType.FREE_HEAD:
@@ -164,19 +168,14 @@ def lateral_analysis(
           A[0, 0] = 1.0
           r[0] = -float(y[0])
         else:
-          A[0, :] = 0.0
           A[0, :] = EI * D3row0
-          r[0] = float(lc.H_N) - float(EI * (D3 @ y)[0])
+          r[0] = float(lc.H_N - EI * (D3row0 @ y))
 
-          if abs(lc.M_Nm) > 0.0:
-            A[1, :] = 0.0
+          if abs(lc.M_Nm) > 0.0 and n >= 2:
             A[1, :] = EI * D2row0
-            r[1] = float(lc.M_Nm) - float(EI * (D2 @ y)[0])
+            r[1] = float(lc.M_Nm - EI * (D2row0 @ y))
 
-      # Merge rhs: residual + bc contributions (bc vector already matched rows)
-      r = r + rhs_bc  
-
-      A[np.isnan(A)] = 0.0
+      A = np.nan_to_num (A, nan=0.0, posinf=0.0, neginf=0.0)
       r = np.nan_to_num(r, nan=0.0, posinf=0.0, neginf=0.0)
       A += (1e-9 * EI) * np.eye(n)      
 
@@ -185,15 +184,28 @@ def lateral_analysis(
         dy = np.linalg.solve(A, r)
       except np.linalg.LinAlgError:
         # fallback damped least squares if singular
-        dy = np.linalg.lstsq(A + 1e-9*np.eye(n), r, rcond=None)[0]
+        dy = np.linalg.lstsq(A, r, rcond=None)[0]
 
-      y += cfg.relax * dy
+      if not np.all(np.isfinite(dy)):
+        break
 
-      y = np.nan_to_num(y, nan=0.0, posinf=0.0, neginf=0.0)
+      y_new = y + cfg.relax * dy
+
+      if np.max(np.abs(y_new)) > 0.5 * pile.d_m:
+        break
+
+      y_new = np.nan_to_num(y, nan=0.0, posinf=0.0, neginf=0.0)
       # y = np.clip(y, -0.5 * pile.d_m, 0.5 * pile.d_m)
 
-      if np.linalg.norm(dy, ord=np.inf) < cfg.tol:
+      if np.linalg.norm(dy, ord=np.inf) < cfg.tol * max(1e-5, np.max(np.abs(y_new))):
+        y = y_new
+        converged = True
         break
+
+      y = y_new
+
+      if not converged:
+        continue
     
     # Post-processing
     theta = np.zeros(n)
@@ -201,17 +213,17 @@ def lateral_analysis(
       theta[0] = (y[1] - y[0]) / dz
       theta[-1] = (y[-1] - y[-2]) / dz
     if n >= 3:
-      theta[1:-1] = (y[2:] - y[:-2]) / (2*dz)
+      theta[1:-1] = (y[2:] - y[:-2]) / (2.0 * dz)
 
     ypp = D2 @ y
     yppp = D3 @ y
     M = EI * ypp
     V = EI * yppp
-    p = np.array([py_spring(y[i], z[i])[0] for i in range(n)])
+    p_out = np.array([py_spring(y[i], z[i])[0] for i in range(n)])
 
     res = LateralResults(
-      z_m=z, y_m=y, theta_rad=theta, M_Nm=M, V_N=V, p_N_per_m=p,
-      head_deflection_mm=y[0]*1e3, head_rotation_mrad=theta[0]*1e3
+      z_m=z, y_m=y, theta_rad=theta, M_Nm=M, V_N=V, p_N_per_m=p_out,
+      head_deflection_mm=float(y[0]*1e3), head_rotation_mrad=float(theta[0]*1e3)
     )
     results_per_step.append(res)
     head_curve.append((lc.H_N, float(y[0])))
