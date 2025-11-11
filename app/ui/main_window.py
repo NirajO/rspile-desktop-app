@@ -373,10 +373,15 @@ class MainWindow(QMainWindow):
           for u in e.mimeData().urls():
               if u.toLocalFile().lower().endswith(".rspile.json"):
                   e.acceptProposedAction()
+                  self.setStyleSheet("QMainWindow {border: 2px dashed #4a90e2;}")
                   return
       e.ignore()
 
+  def dragLeaveEvent(self, e):
+      self.setStyleSheet("")
+
   def dropEvent(self, e):
+      self.setStyleSheet("")
       for u in e.mimeData().urls():
           p = u.toLocalFile()
           if p.lower().endswith(".rspile.json"):
