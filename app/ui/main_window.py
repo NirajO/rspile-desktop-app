@@ -48,8 +48,19 @@ class MainWindow(QMainWindow):
     self.welcome = self._make_welcome()
     self.layout.addWidget(self.welcome)
 
-    self.info = QTextEdit(readOnly=True)
+    self.info = QTextEdit()
+    self.info.setReadOnly(True)
     self.info.setMinimumHeight(140)
+    self.info.setObjectName("ProjectSummary")
+    self.info.setFrameShape(QFrame.NoFrame)
+    self.info.setStyleSheet("""
+            QTextEdit#ProjectSummary{
+            font-family: 'Segoe UI', 'Helvetica Neue', Arial;
+            font-size: 18px;
+            background: transparent;
+            padding: 25px 30px;
+    }
+    """)
 
     self.plot_area = QTabWidget()
     self.plot_area.setTabsClosable(True)
@@ -1217,30 +1228,91 @@ class MainWindow(QMainWindow):
                 f"<b>Layers</b>: {len(layers)}"
             )
 
-            lines = [
-              "Project Summary",
-              "----------------",
-              f"Units: {units}",
-              f"Pile: {pile if pile else '(empty)'}",
-              f"Loads: {loads if loads else '(empty)'}",
-              f"Soil Layers: {len(layers)} layer(s)",
-              "",
-            ]
+            # Pile summary
+            if pile:
+                E = pile.get("elastic_modulus_pa")
+                E_txt = f"{E/1e9:.1f} GPa" if E else "-"
+                pile_text = (
+                    f"L = {pile.get('length_m', '-')} m &nbsp;|&nbsp; "
+                    f"D = {pile.get('diameter_m', '-')} m &nbsp;|&nbsp; "
+                    f"E = {E_txt} &nbsp;|&nbsp; "
+                    f"γ = {pile.get('unit_weight_kNmp3', '-')} kN/m³ &nbsp;|&nbsp;"
+                )
+            else:
+                pile_text = "<span style='color:#888;'>(not defined)</span>"
 
-            # pretty-print layers
+            # Loads summary
+            if loads:
+                loads_text = (
+                    f"Axial = {loads.get('axial_kN', 0)} kN &nbsp;|&nbsp; "
+                    f"Lateral = {loads.get('lateral_kN', 0)} kN &nbsp;|&nbsp; "
+                    f"Moment = {loads.get('moment_kN', 0)} kN.m"
+                )
+            else:
+                loads_text = "<span style='color:#888;'>(not defined)</span"
+
+            # Soil layers table
+            layer_rows = ""
+            for i, L in enumerate(layers, 1):
+                if L.get("type") == "clay":
+                    soil_type = "Clay"
+                    strength = f"su = {L.get('undrained_shear_strength_kPa', 0)} kPa"
+                else:
+                    soil_type = "Sand"
+                    strength = f"φ = {L.get('phi_deg', 0)}°"  
+
+                layer_rows += (
+                    "<tr>"
+                    f"<td>{i}</td>"
+                    f"<td>{soil_type}</td>"
+                    f"<td>{L.get('from_m', 0):g}-{L.get('to_m', 0):g} m</td>"
+                    f"<td>{L.get('gamma_kNmp3', 0):g} kN/m³</td>"
+                    f"<td>{strength}</td>"
+                    "</tr>"
+                )    
+
+            layers_section = ""
             if layers:
-                lines.append("Layers:")
-                for i, L in enumerate(layers, 1):
-                    if L.get("type") == "clay":
-                        extra = f"su={L.get('undrained_shear_strength_kPa', 0)} kPa"
-                    else:
-                        extra = f"phi={L.get('phi_deg', 0)}"
-                    lines.append(
-                        f" {i}. {L.get('type', '?')} {L.get('from_m', 0)}-{L.get('to_m',0)} m, "
-                        f"gamma={L.get('gamma_kNpm3',0)} kN/m³, {extra}"
-                    )
-            lines += ["", "Tip: Use Edit menu to enter data."]
-            self.info.setPlainText("\n".join(lines))
+                layers_section = f"""
+                    <table style="border-collapse:collapse; margin-top: 4px; font-size: 10px;">
+                        <tr style="font-weight:600; color:#555;">
+                            <th align="left" style="padding-right:6px;">#</th>
+                            <th align="left" style="padding-right:6px;">Type</th>
+                            <th align="left" style="padding-right:6px;">Depth</th>
+                            <th align="left" style="padding-right:6px;">γ</th>    
+                            <th align="left">Strength</th>
+                        </tr>
+                        {layer_rows}
+                    </table>"""
+
+            html = f"""
+            <div>
+                <div style="
+                    font-size: 13px;
+                    font-weight: 600;
+                    letter-spacing: 0.5px;
+                    color: #2b6cb0;
+                    margin-bottom: 2px;>
+                 Project Summary
+                </div>
+                <div style="height: 1px; background: #d0d7e2; margin-bottom: 6px;"></div> 
+
+                <p style="margin: 0 0 4px;">
+                    <b>Units:</b> {units}<br>
+                    <b>Pile:</b> {pile_text}<br>
+                    <b>Loads:</b> {loads_text}<br>
+                    <b>Soil Layers:</b> {len(layers)} defined
+                </p>
+
+                {layers_section}
+
+                <p style="margin-top: 6px; color: #888; font-size: 9px;">
+                    Tip: Use the Edit controls to update inputs.
+                    Drag &amp; drop a <code>.rspile.json</code> file anywhere to open an existing project.
+                </p>
+            </div>"""
+
+            self.info.setHtml(html)
             self.btn_gen.setEnabled(True)
             self._update_status_bar()
 
