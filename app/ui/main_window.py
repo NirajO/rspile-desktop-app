@@ -14,7 +14,11 @@ import matplotlib.pyplot as plt
 import matplotlib as mpl
 import pandas as pd
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas, NavigationToolbar2QT as NavigationToolbar
-from PySide6.QtWidgets import (QApplication, QMainWindow, QMenu, QHBoxLayout, QWidget, QVBoxLayout, QLabel, QPushButton, QFileDialog, QMessageBox, QStatusBar, QTextEdit, QTabWidget, QToolBar, QDockWidget, QListWidget, QListWidgetItem, QFrame)
+from matplotlib.ticker import MaxNLocator, FormatStrFormatter
+from matplotlib.lines import Line2D
+import matplotlib.patches as mpatches
+from mpl_toolkits.mplot3d import Axes3D
+from PySide6.QtWidgets import (QApplication, QMainWindow, QMenu, QHBoxLayout, QWidget, QVBoxLayout, QLabel, QPushButton, QFileDialog, QMessageBox, QStatusBar, QTextEdit, QTabWidget, QToolBar, QDockWidget, QListWidget, QListWidgetItem, QFrame, QDoubleSpinBox, QFormLayout)
 from PySide6.QtCore import Qt, QPoint, QSettings
 from PySide6.QtGui import QAction, QKeySequence, QIcon
 from ..models.curves import get_tz_curve, get_qz_curve, get_py_curve, make_py_spring
@@ -113,6 +117,13 @@ class MainWindow(QMainWindow):
 
     self.setAcceptDrops(True)
 
+    # 3D view state
+    self._dock3d = None
+    self._3d_canvas = None
+    self._3d_fig = None
+    self._3d_ax = None
+    self._3d_scale_spin = None
+
   #---------Menus---------
   def _build_menu(self):
       #----------- Toolbar ---------------
@@ -165,6 +176,12 @@ class MainWindow(QMainWindow):
       act_lat.setShortcut("Ctrl+Shift+L")
       act_lat.triggered.connect(self.run_lateral_analysis)
       tb.addAction(act_lat); m_edit.addAction(act_lat)
+
+      # 3D view
+      act_3d = QAction("Open 3D View", self)
+      act_3d.setShortcut("Ctrl+3")
+      act_3d.triggered.connect(self.open_3d_view)
+      tb.addAction(act_3d)
 
       m_edit.addSeparator()
 
@@ -801,6 +818,207 @@ class MainWindow(QMainWindow):
           lambda pos, w=widget, k=kind: self._show_export_menu(w, pos, k)
       )  
 
+  def open_3d_view(self):
+    """create/show the 3D pile viewer dock and render the current projects."""
+    if self._dock3d is None:
+        self._dock3d = QDockWidget("3D View", self)
+        self._dock3d.setObjectName("ThreeDViewDock")
+        self._dock3d.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
+
+        host = QWidget()
+        v = QVBoxLayout(host)
+        v.setContentsMargins(6,6,6,6)
+
+        # controls row
+        ctrl = QWidget()
+        fl = QFormLayout(ctrl)
+        fl.setContentsMargins(0,0,0,0)
+        self._3d_scale_spin = QDoubleSpinBox()
+        self._3d_scale_spin.setRange(1.0, 1000.0)
+        self._3d_scale_spin.setDecimals(1)
+        self._3d_scale_spin.setValue(50.0)
+        self._3d_scale_spin.setSuffix(" x")
+        self._3d_scale_spin.valueChanged.connect(self._refresh_3d_view)
+        fl.addRow("Deflection scale:", self._3d_scale_spin)
+        ctrl.setLayout(fl)
+        v.addWidget(ctrl)
+
+        # matplotlib 3D figure
+        self._3d_fig = plt.figure(figsize=(6.5, 6), constrained_layout=True)
+        self._3d_ax = self._3d_fig.add_subplot(111, projection='3d')
+        self._3d_canvas = FigureCanvas(self._3d_fig)
+        v.addWidget(NavigationToolbar(self._3d_canvas, host))
+        v.addWidget(self._3d_canvas)
+
+        host.setLayout(v)
+        self._dock3d.setWidget(host)
+        self.addDockWidget(Qt.RightDockWidgetArea, self._dock3d)
+
+    self._dock3d.show()
+    self._dock3d.raise_()
+    self._refresh_3d_view()
+
+  def _refresh_3d_view(self):
+      """Render pile  + soil + optional lateral deflection in the 3D axes."""
+      if self._3d_ax is None:
+          return
+      self._3d_ax.clear()
+
+      # read inputs
+      proj = self.project or {}
+      pile = proj.get("pile", {})
+      layers = proj.get("soil_profile", [])
+
+      try:
+          L = float(pile.get("length_m", 0.0))
+          D = float(pile.get("diameter_m", 0.0))
+      except (TypeError, ValueError):
+          L, D = 0.0, 0.0
+
+      if L <= 0.0 or D <= 0.0:
+          self._3d_ax.text2D(0.05, 0.95, "Define pile (L, D) to view 3D", transform=self._3d_ax.transAxes)
+          self._3d_canvas.draw()
+          return
+      
+      R = 0.5 * D
+      n_theta = 48
+      theta = np.linspace(0, 2*np.pi, n_theta)
+
+      # soil colors
+      def soil_color(layer):
+          typ = (layer.get("type") or "").lower()
+          if typ == "clay":
+              return (0.55, 0.37, 0.3, 0.55)  #brownish, semi-transparent
+          if typ == "sand":
+              return (0.95, 0.82, 0.52, 0.45)  #sandy yellow
+          return (0.7, 0.7, 0.7, 0.5)  #default gray
+      
+      seen_soil = set() # track which soil types appear for the legend
+      
+      # draw soil layers as translucent rectangular bands
+      half = 2.5 * D
+      for Lyr in layers:
+          try:
+              z0 = float(Lyr.get("from_m", 0.0))
+              z1 = float(Lyr.get("to_m", 0.0))
+          except (TypeError, ValueError):
+              continue
+          if z1 <= z0:
+              continue
+          c = soil_color(Lyr)
+          typ = (Lyr.get("type") or "").lower()
+          seen_soil.add(typ)
+          Xs = np.array([[-half, -half], [half, half]])
+          Ys = np.array([[-half, half], [-half, half]])
+          Z0 = -z0 * np.ones_like(Xs)
+          Z1 = -z1 * np.ones_like(Xs)
+          # four sides
+          self._3d_ax.plot_surface(-half*np.ones_like(Xs), Ys, np.vstack([Z0[0], Z1[0]]), alpha=c[3], color=c[:3], linewidth=0, shade=True)
+          self._3d_ax.plot_surface(half*np.ones_like(Xs), Ys, np.vstack([Z0[0], Z1[0]]), alpha=c[3], color=c[:3], linewidth=0, shade=True)
+          self._3d_ax.plot_surface(Xs, -half*np.ones_like(Xs), np.vstack([Z0[0], Z1[0]]), alpha=c[3], color=c[:3], linewidth=0, shade=True)
+          self._3d_ax.plot_surface(Xs, half*np.ones_like(Xs), np.vstack([Z0[0], Z1[0]]), alpha=c[3], color=c[:3], linewidth=0, shade=True)
+          #top cap (horizontal plane at z0)
+          Zcap_top = -z0 * np.ones_like(Xs)
+          self._3d_ax.plot_surface(
+              Xs, Ys, Zcap_top,
+              alpha=max(0.15, c[3]-0.2),
+              color=c[:3],
+              linewidth=0,
+              shade=False
+          )
+
+      # draw pile cylinder (undeformed)
+      z_line = np.linspace(0.0, L, 120)
+      Z = -z_line[None, :]
+      Xc = (R * np.cos(theta))[:, None]
+      Yc = (R * np.sin(theta))[:, None]
+      X = np.repeat(Xc, Z.shape[1], axis=1)
+      Y = np.repeat(Yc, Z.shape[1], axis=1)
+      Z = np.repeat(Z, X.shape[0], axis=0)
+      self._3d_ax.plot_surface(X, Y, Z, color=(0.75, 0.78, 0.84), alpha=0.95, rstride=1, cstride=4, linewidth=0.2, edgecolor=(0.9, 0.9, 0.95))
+
+      # demo: overlay lateral deflection of last step, scaled
+      scale = float(self._3d_scale_spin.value() if self._3d_scale_spin else 50.0)
+      y_defl = None
+      z_defl = None
+      if getattr(self, "last_lateral_out", None):
+          steps = self.last_lateral_out.get("steps", [])
+          if steps:
+              last = steps[-1]
+              z_defl = np.asarray(getattr(last, "z_m", []), dtype=float).reshape(-1)
+              y_defl = np.asarray(getattr(last, "y_m", []), dtype=float).reshape(-1)
+
+      if y_defl is not None and z_defl is not None and z_defl.size > 2 and y_defl.size == z_defl.size:
+          xd = scale * y_defl
+          # centerline
+          self._3d_ax.plot(xd, np.zeros_like(xd), -z_defl, lw=2.2, color="C3", label="Deflected centerline")
+          # deflected cylinder (translate x by deflection)
+          y_interp = np.interp(-Z[0, :], -z_defl, xd)
+          Xdef = X + y_interp[None, :]
+          self._3d_ax.plot_surface(Xdef, Y, Z, color=(0.92, 0.55, 0.55), alpha=0.35, rstride=1, cstride=6, linewidth=0)
+
+      # ground plane
+      gx = np.linspace(-2*D, 2*D, 10)
+      gy = np.linspace(-2*D, 2*D, 10)
+      GX, GY = np.meshgrid(gx, gy)
+      GZ = np.zeros_like(GX)
+      self._3d_ax.plot_surface(GX, GY, GZ, alpha=0.15, color=(0.5, 0.7, 0.95))
+
+      # axes styling
+      self._3d_ax.set_xlabel("X (m)")
+      self._3d_ax.set_ylabel("Y (m)")
+      self._3d_ax.set_zlabel("Z (m)")
+      self._3d_ax.set_title("Pile 3D view (soil layers + pile; deflection scaled)")
+
+      span = max(2*D, L/12)
+      self._3d_ax.set_xlim(-span, span)
+      self._3d_ax.set_ylim(-span, span)
+      self._3d_ax.set_zlim(-L, 0)
+      self._3d_ax.set_box_aspect((1, 1, max(1.0, L/(3*D))))
+
+      # Reduce clutter on lateral axes; keep z readable
+      self._3d_ax.xaxis.set_major_locator(MaxNLocator(nbins=3))
+      self._3d_ax.yaxis.set_major_locator(MaxNLocator(nbins=3))
+
+      # z every ~2 m (adjust automatically with nbins)
+      self._3d_ax.zaxis.set_major_locator(MaxNLocator(nbins=9))
+      self._3d_ax.zaxis.set_major_formatter(FormatStrFormatter('%g'))
+
+      # Give Z label a little air so it does not collide with tick labels
+      self._3d_ax.set_zlabel("Z (m)", labelpad=12)
+
+      # Slightly smaller tick text; pull numbers off the panes a touch
+      self._3d_ax.tick_params(axis='both', which='major', labelsize=8, pad=4)
+      self._3d_ax.tick_params(axis='z', which='major', labelsize=9, pad=6)
+
+      # Softer panes so labels pop
+      self._3d_ax.xaxis.pane.set_alpha(0.04)
+      self._3d_ax.yaxis.pane.set_alpha(0.04)
+      self._3d_ax.zaxis.pane.set_alpha(0.06)
+
+      # Legend
+      handles = []
+
+      # Soil patches only for soil present
+      if "clay" in seen_soil:
+          handles.append(mpatches.Patch(facecolor=(0.55,0.37,0.3), alpha=0.55, edgecolor='none', label='Clay'))
+      if "sand" in seen_soil:
+          handles.append(mpatches.Patch(facecolor=(0.95,0.82,0.52), alpha=0.45, edgecolor='none', label='Sand'))
+
+      # Pile (undeformed) proxy
+      handles.append(mpatches.Patch(facecolor=(0.75,0.78,0.84), alpha=0.95, edgecolor='none', label='Pile (undeformed)'))
+
+      # Deflected pile + centerline proxies (only if we drew them)
+      if y_defl is not None and z_defl is not None and z_defl.size > 2 and y_defl.size == z_defl.size:
+          handles.append(mpatches.Patch(facecolor=(0.92,0.55,0.55), alpha=0.35, edgecolor='none', label='Pile (deflected x{})'.format(int(scale))))
+          handles.append(Line2D([0], [0], color="C3", lw=2.2, label='Deflected centerline'))
+      
+      # Place legend in the upper-left corner inside the axes pane
+      self._3d_ax.legend(handles=handles, loc='upper left', bbox_to_anchor=(0.2,0.98), fontsize=8, frameon=True)
+      
+      self._3d_canvas.draw()
+          
+
   #------include axial analysis graphs in pdf report-------
   def _figure_to_imagereader(self, fig, dpi=200):
       buf = io.BytesIO()
@@ -1427,6 +1645,12 @@ class MainWindow(QMainWindow):
             self.info.setHtml(html)
             self.btn_gen.setEnabled(True)
             self._update_status_bar()
+
+            if getattr(self, "_dock3d", None) and self._dock3d.isVisible():
+                try:
+                    self._refresh_3d_view()
+                except Exception as e:
+                    print("[3D] refresh_ui -> _refresh_3d_view_error:", e)
 
   def _init_theme(self):
     s = QSettings("Pile Analysis", "StudentEdition")
