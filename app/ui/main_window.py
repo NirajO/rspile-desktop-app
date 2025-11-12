@@ -32,7 +32,7 @@ from ..io.serializer import load_project, save_project
 class MainWindow(QMainWindow):
   def __init__(self):
     super().__init__()
-    self.setWindowTitle("RSPile - Pile Analysis Tool")
+    self.setWindowTitle("Pile Analysis Tool")
     self.setWindowIcon(QIcon("icons/app_icon.png"))
     self.resize(1200, 800)
     self.setMinimumSize(900, 600)
@@ -103,7 +103,7 @@ class MainWindow(QMainWindow):
     self.last_lateral_out = None
 
     # Restore window geometry and dock/toolbar layout
-    s = QSettings("RSPile", "StudentEdition")
+    s = QSettings("Pile Analysis", "StudentEdition")
     g = s.value("win/geo")
     st = s.value("win/state")
     if g is not None:
@@ -232,10 +232,20 @@ class MainWindow(QMainWindow):
       self.recent_list.setMaximumHeight(160)
       self.recent_list.itemDoubleClicked.connect(lambda it: self._open_path(it.text()))
 
-      dlay.addWidget(QLabel("Recent Projects"))
-      dlay.addWidget(self.recent_list)
+      row_recent = QHBoxLayout()
+      lbl_recent = QLabel("Recent Projects")
+      btn_clear_recent = QPushButton("Clear")
+      btn_clear_recent.setFixedHeight(22)
+      btn_clear_recent.setStyleSheet("font-size: 10px; padding: 2px 6px;")
+      btn_clear_recent.clicked.connect(self._clear_recent_files)
+      row_recent.addWidget(lbl_recent)
+      row_recent.addStretch(1)
+      row_recent.addWidget(btn_clear_recent)
 
+      dlay.addLayout(row_recent)
+      dlay.addWidget(self.recent_list)
       dlay.addStretch(1)
+
       dockw.setLayout(dlay)
       self._dock.setWidget(dockw)
       self.addDockWidget(Qt.LeftDockWidgetArea, self._dock)
@@ -255,7 +265,7 @@ class MainWindow(QMainWindow):
   def _make_welcome(self) -> QWidget:
       w = QWidget()
       lay = QVBoxLayout(w)
-      title = QLabel("RSPile - Student Edition")
+      title = QLabel("Pile Analysis - Student Edition")
       title.setStyleSheet("font-size: 22px; font-weight: 600;")
       subtitle = QLabel("Analyze single piles under axial and lateral loads")
       subtitle.setStyleSheet("color: #666; margin-bottom: 8px;")
@@ -274,6 +284,7 @@ class MainWindow(QMainWindow):
       # recent
       rec = QListWidget()
       rec.setMaximumHeight(160)
+      self._welcome_recent = rec
       for p in self._recent_files():
           QListWidgetItem(p, rec)
       rec.itemDoubleClicked.connect(lambda it: self._open_path(it.text()))
@@ -288,11 +299,19 @@ class MainWindow(QMainWindow):
       return w
   
   def _refresh_recent_list(self):
-      if not hasattr(self, "recent_list"):
-          return
-      self.recent_list.clear()
-      for p in self._recent_files():
-          QListWidgetItem(p, self.recent_list)
+      files = self._recent_files()
+
+      # Left dock list
+      if hasattr(self, "recent_list"):
+        self.recent_list.clear()
+        for p in files:
+            QListWidgetItem(p, self.recent_list)
+    
+      # Welcome screen list
+      if hasattr(self, "_welcome_recent"):
+        self._welcome_recent.clear()
+        for p in files:
+          QListWidgetItem(p, self._welcome_recent)
 
   def new_project(self):
         #Minimal schema we will expand later
@@ -311,7 +330,7 @@ class MainWindow(QMainWindow):
 
   def open_project(self):
         fn, _ = QFileDialog.getOpenFileName(
-          self, "Open Project", ".", "RSPile (*.rspile.json);;All files (*)"
+          self, "Open Project", ".", "RSPile (*.pile.json);;All files (*)"
         )
         if not fn:
           return
@@ -329,10 +348,10 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "No Project", "Create or open a project first.")
             return
           fn, _ = QFileDialog.getSaveFileName(
-            self, "Save Project As", ".", "RSPile (*.rspile.json)"
+            self, "Save Project As", ".", "RSPile (*.pile.json)"
           )
-          if not fn.lower().endswith(".rspile.json"):
-            fn += ".rspile.json"
+          if not fn.lower().endswith(".pile.json"):
+            fn += ".pile.json"
           try:
             save_project(self.project, fn)
             self.statusBar().showMessage("Project Saved", 3000)
@@ -342,14 +361,22 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Save Failed", f"Could not save file.\n\n{e}")
 
   def _recent_files(self) -> list[str]:
-      s = QSettings("RSPile", "StudentEdition")
+      s = QSettings("Pile Analysis", "StudentEdition")
       return s.value("recent_files", [], list)
   
   def _push_recent_file(self, path: str) -> None:
-      s = QSettings("RSPile", "StudentEdition")
+      s = QSettings("Pile Analysis", "StudentEdition")
       items = [p for p in self._recent_files() if p != path]
       items.insert(0, path)
       s.setValue("recent_files", items[:10])
+      if hasattr(self, "_rebuild_recent_menu"):
+          self._rebuild_recent_menu()
+      self._refresh_recent_list()
+
+  def _clear_recent_files(self):
+      # Clear stored recent projects and refresh UI lists/menyus.
+      s = QSettings("Pile Analysis", "StudentEdition")
+      s.setValue("recent_files", [])
       if hasattr(self, "_rebuild_recent_menu"):
           self._rebuild_recent_menu()
       self._refresh_recent_list()
@@ -382,7 +409,7 @@ class MainWindow(QMainWindow):
   def dragEnterEvent(self, e):
       if e.mimeData().hasUrls():
           for u in e.mimeData().urls():
-              if u.toLocalFile().lower().endswith(".rspile.json"):
+              if u.toLocalFile().lower().endswith(".pile.json"):
                   e.acceptProposedAction()
                   self.setStyleSheet("QMainWindow {border: 2px dashed #4a90e2;}")
                   return
@@ -395,7 +422,7 @@ class MainWindow(QMainWindow):
       self.setStyleSheet("")
       for u in e.mimeData().urls():
           p = u.toLocalFile()
-          if p.lower().endswith(".rspile.json"):
+          if p.lower().endswith(".pile.json"):
               self._open_path(p)
               break
 
@@ -642,9 +669,13 @@ class MainWindow(QMainWindow):
         print(f"[probe] z={z_test:.2f} m -> p={p_test:.1f} N/m, k={k_test:.1f} N/m^2")
 
     # Define Load steps (kN -> N)
-    H_user_kN = float((self.project.get("loads") or {}).get("lateral_kN", 400.0))
+    loads = (self.project.get("loads") or {})
+    H_user_kN = float(loads.get("lateral_kN", 400.0))
+    M_user_kNm = float(loads.get("moment_kNm", 0.0))
+    M_user_Nm = M_user_kNm * 1e3
+
     grid = np.linspace(0.0, H_user_kN, 4)
-    steps = [LateralLoadCase(H_N=float(h) * 1e3) for h in grid]
+    steps = [LateralLoadCase(H_N=float(h) * 1e3, M_Nm=M_user_Nm) for h in grid]
 
     # Solver configuration
     cfg = LateralConfig(bc=BCType.FREE_HEAD, max_iters=80, tol=1e-6, relax=0.8)
@@ -914,23 +945,63 @@ class MainWindow(QMainWindow):
       # Header
       c.setFont("Helvetica-Bold", 14)
       c.drawString(margin, cursor_y, "Axial Load-Settlement Analysis")
-      cursor_y -= 16
+      cursor_y -= 18
 
-      # Meta lines (pile, load, etc)
+      # Text helper
       c.setFont("Helvetica", 10)
       def line(txt):
           nonlocal cursor_y
           c.drawString(margin, cursor_y, txt)
           cursor_y -= 12
 
+      # Gather inputs
+      meta = self.project.get("meta", {})
       pile = self.project.get("pile", {})
       loads = self.project.get("loads", {})
-      line(f'Pile: L={pile.get("length_m", "?")}m, D={pile.get("diameter_m", "?")}m, E={pile.get("elastic_modulus_pa", "?")} Pa')
-      line(f'Axial load (service): {loads.get("axial_kN", "?")} kN')
-      cursor_y -= 6
-      line("Notes: Results generated from current projects state and soil profiles.")
+      layers = self.project.get("soil_profile", [])
 
-      # space before plots
+      units = meta.get("units", "SI")
+
+      E = pile.get("elastic_modulus_pa")
+      E_txt = f"{E/1e9:.2f} GPa" if E else "-"
+      gamma = pile.get("unit_weight_kNpm3", "-")
+
+      moment_kNm = loads.get("moment_kNm", loads.get("moment_kN", "-"))
+
+      # Inputs summary
+      line(f"Units: {units}")
+      line(
+          f"Pile: L = {pile.get('length_m', '-')} m, "
+          f"D = {pile.get('diameter_m', '-')} m, "
+          f"E = {E_txt}, "
+          f"γ = {gamma} kN/m³"
+      )
+      line (
+          f"Loads: Axial = {loads.get('axial_kN', '-')} kN, "
+          f"Lateral = {loads.get('lateral_kN', '-')} kN, "
+          f"Moment = {moment_kNm} kN.m"
+      )
+
+      # Soil layers
+      if layers:
+          line("Soil Layers:")
+          for i, L in enumerate(layers, 1):
+              soil_type = (L.get("type") or "?").title()
+              gL = L.get("gamma_kNpm3", "-")
+              if L.get("type") == "clay":
+                  strength = f"su = {L.get('undrained_shear_strength_kPa', '-')} kPa"
+              else:
+                  strength = f"φ = {L.get('phi_deg', '-')}°"
+              line(
+                  f" {i}) {soil_type}, "
+                  f"{L.get('from_m', '?')}-{L.get('to_m', '?')} m, "
+                  f"γ = {gL} kN/m³, {strength}"
+              )
+      else:
+          line("Soil Layers: (none defined)")
+
+      cursor_y -= 4
+      line("Notes: Results generated from the project inputs listed above.")
       cursor_y -= 10
 
       # Draw axial figures captured during run
@@ -1011,24 +1082,65 @@ class MainWindow(QMainWindow):
       # Header
       c.setFont("Helvetica-Bold", 14)
       c.drawString(margin, cursor_y, "Lateral Analysis Report")
-      cursor_y -= 16
+      cursor_y -= 18
 
-      # Meta datas
+      # Text Helper
       c.setFont("Helvetica", 10)
       def line(txt):
           nonlocal cursor_y
           c.drawString(margin, cursor_y, txt)
           cursor_y -= 12
 
+      # Gather inputs
+      meta = self.project.get("meta", {})
       pile = self.project.get("pile", {})
       loads = self.project.get("loads", {})
-      line(f'Pile: L={pile.get("length_m", "?")} m, D={pile.get("diameter_m", "?")} m, E={pile.get("elastic_modulus_pa", "?")} Pa ')
-      line(f'Head Lateral Loads (kN): {loads.get("lateral_kN", "-")}')
-      cursor_y -= 6
-      line("Notes: Results generated from current project state and soil profiles.")
+      layers = self.project.get("soil_profile", [])
 
-      # space before plots
+      units = meta.get("units", "SI")
+
+      E = pile.get("elastic_modulus_pa")
+      E_txt = f"{E/1e9:.2f} GPa" if E else "-"
+      gamma = pile.get("unit_weight_kNpm3", "-")
+
+      moment_kNm = loads.get("moment_kNm", loads.get("moment_kN", "-"))
+
+      # Inputs summary
+      line(f"Units: {units}")
+      line(
+          f"Pile: L = {pile.get('length_m', '-')} m, "
+          f"D = {pile.get('diameter_m', '-')} m, "
+          f"E = {E_txt}, "
+          f"γ = {gamma} kN/m³"
+      )
+      line (
+          f"Loads: Axial = {loads.get('axial_kN', '-')} kN, "
+          f"Lateral = {loads.get('lateral_kN', '-')} kN, "
+          f"Moment = {moment_kNm} kN.m"
+      )
+
+      # Soil layers
+      if layers:
+          line("Soil Layers:")
+          for i, L in enumerate(layers, 1):
+              soil_type = (L.get("type") or "?").title()
+              gL = L.get("gamma_kNpm3", "-") 
+              if L.get("type") == "clay":
+                  strength = f"su = {L.get('undrained_shear_strength_kPa', '-')} kPa"
+              else:
+                  strength = f"φ = {L.get('phi_deg', '-')}°"
+              line(
+                  f" {i}) {soil_type}, "
+                  f"{L.get('from_m', '?')}-{L.get('to_m', '?')} m, "
+                  f"γ = {gL} kN/m³, {strength}"
+              )
+      else:
+          line("Soil Layers: (none defined)")
+
+      cursor_y -= 4
+      line("Notes: Results generated from the project inputs listed above.")
       cursor_y -= 10
+
 
       # Figures captured during lateral analysis
       figs = list(getattr(self, "_lateral_figures", []))
@@ -1168,7 +1280,7 @@ class MainWindow(QMainWindow):
           self._set_dirty(True)
     
   def closeEvent(self, e):
-      s = QSettings("RSPile", "StudentEdition")
+      s = QSettings("Pile Analysis", "StudentEdition")
       s.setValue("win/geo", self.saveGeometry())
       s.setValue("win/state", self.saveState(1))
       super().closeEvent(e)
@@ -1236,7 +1348,7 @@ class MainWindow(QMainWindow):
                     f"L = {pile.get('length_m', '-')} m &nbsp;|&nbsp; "
                     f"D = {pile.get('diameter_m', '-')} m &nbsp;|&nbsp; "
                     f"E = {E_txt} &nbsp;|&nbsp; "
-                    f"γ = {pile.get('unit_weight_kNmp3', '-')} kN/m³ &nbsp;|&nbsp;"
+                    f"γ = {pile.get('unit_weight_kNpm3', '-')} kN/m³ &nbsp;|&nbsp;"
                 )
             else:
                 pile_text = "<span style='color:#888;'>(not defined)</span>"
@@ -1246,7 +1358,7 @@ class MainWindow(QMainWindow):
                 loads_text = (
                     f"Axial = {loads.get('axial_kN', 0)} kN &nbsp;|&nbsp; "
                     f"Lateral = {loads.get('lateral_kN', 0)} kN &nbsp;|&nbsp; "
-                    f"Moment = {loads.get('moment_kN', 0)} kN.m"
+                    f"Moment = {loads.get('moment_kNm', 0)} kN.m"
                 )
             else:
                 loads_text = "<span style='color:#888;'>(not defined)</span"
@@ -1263,23 +1375,23 @@ class MainWindow(QMainWindow):
 
                 layer_rows += (
                     "<tr>"
-                    f"<td>{i}</td>"
-                    f"<td>{soil_type}</td>"
-                    f"<td>{L.get('from_m', 0):g}-{L.get('to_m', 0):g} m</td>"
-                    f"<td>{L.get('gamma_kNmp3', 0):g} kN/m³</td>"
-                    f"<td>{strength}</td>"
+                    f"<td style='padding: 2px 18px 2px 0;'>{i}</td>"
+                    f"<td style='padding: 2px 18px 2px 0;'>{soil_type}</td>"
+                    f"<td style='padding: 2px 18px 2px 0;'>{L.get('from_m', 0):g}-{L.get('to_m', 0):g} m</td>"
+                    f"<td style='padding: 2px 18px 2px 0;'>{L.get('gamma_kNmp3', 0):g} kN/m³</td>"
+                    f"<td style='padding: 2px 18px 2px 0;'>{strength}</td>"
                     "</tr>"
                 )    
 
             layers_section = ""
             if layers:
                 layers_section = f"""
-                    <table style="border-collapse:collapse; margin-top: 4px; font-size: 10px;">
+                    <table style="border-collapse:collapse; margin-top: 8px; font-size: 16px;">
                         <tr style="font-weight:600; color:#555;">
-                            <th align="left" style="padding-right:6px;">#</th>
-                            <th align="left" style="padding-right:6px;">Type</th>
-                            <th align="left" style="padding-right:6px;">Depth</th>
-                            <th align="left" style="padding-right:6px;">γ</th>    
+                            <th align="left" style="padding: 0 18px 4px 0;">#</th>
+                            <th align="left" style="padding: 0 18px 4px 0;">Type</th>
+                            <th align="left" style="padding: 0 18px 4px 0;">Depth</th>
+                            <th align="left" style="padding: 0 18px 4px 0;">γ</th>    
                             <th align="left">Strength</th>
                         </tr>
                         {layer_rows}
@@ -1306,9 +1418,9 @@ class MainWindow(QMainWindow):
 
                 {layers_section}
 
-                <p style="margin-top: 6px; color: #888; font-size: 9px;">
+                <p style="margin-top: 6px; color: #888; font-size: 16px;">
                     Tip: Use the Edit controls to update inputs.
-                    Drag &amp; drop a <code>.rspile.json</code> file anywhere to open an existing project.
+                    Drag &amp; drop a <code>.pile.json</code> file anywhere to open an existing project.
                 </p>
             </div>"""
 
@@ -1317,7 +1429,7 @@ class MainWindow(QMainWindow):
             self._update_status_bar()
 
   def _init_theme(self):
-    s = QSettings("RSPile", "StudentEdition")
+    s = QSettings("Pile Analysis", "StudentEdition")
     theme = s.value("theme", "light")
     self._current_theme = theme
     self._apply_theme(theme)
