@@ -108,14 +108,24 @@ class MainWindow(QMainWindow):
 
     # Restore window geometry and dock/toolbar layout
     s = QSettings("Pile Analysis", "StudentEdition")
+
+    s.setValue("win/geo", b"")
+    s.setValue("win/state", b"")
+
     g = s.value("win/geo")
     st = s.value("win/state")
-    if g is not None:
-        self.restoreGeometry(g)
-    if st is not None:
-        self.restoreState(st, 1)
-
-    self.setAcceptDrops(True)
+    try:
+        if g:
+            self.restoreGeometry(g)
+        if st:
+            self.restoreState(st, 1)
+    except Exception as e:
+        print("restoreState/restoreGeometry failed, using default layout:", e)
+    
+    if hasattr(self, "_dock"):
+        self._dock.show()
+        self._dock.raise_()
+    
 
     # 3D view state
     self._dock3d = None
@@ -225,6 +235,7 @@ class MainWindow(QMainWindow):
       self._dock = QDockWidget("Project Inspector", self)
       self._dock.setObjectName("ProjectInspectorDock")
       self._dock.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
+      self._dock.setMinimumWidth(260)
       dockw = QWidget()
       dlay = QVBoxLayout(dockw)
       self._lbl_meta = QLabel("")
@@ -266,6 +277,8 @@ class MainWindow(QMainWindow):
       dockw.setLayout(dlay)
       self._dock.setWidget(dockw)
       self.addDockWidget(Qt.LeftDockWidgetArea, self._dock)
+
+      self._dock.show()
 
 
   #-------Actions--------
@@ -1596,7 +1609,7 @@ class MainWindow(QMainWindow):
                     f"<td style='padding: 2px 18px 2px 0;'>{i}</td>"
                     f"<td style='padding: 2px 18px 2px 0;'>{soil_type}</td>"
                     f"<td style='padding: 2px 18px 2px 0;'>{L.get('from_m', 0):g}-{L.get('to_m', 0):g} m</td>"
-                    f"<td style='padding: 2px 18px 2px 0;'>{L.get('gamma_kNmp3', 0):g} kN/m³</td>"
+                    f"<td style='padding: 2px 18px 2px 0;'>{L.get('gamma_kNpm3', 0):g} kN/m³</td>"
                     f"<td style='padding: 2px 18px 2px 0;'>{strength}</td>"
                     "</tr>"
                 )    

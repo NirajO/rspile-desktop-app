@@ -1,0 +1,12 @@
+{
+  "meta": {
+    "version": 1,
+    "units": "SI"
+  },
+  "pile": {},
+  "soil_profile": [],
+  "loads": {},
+  "analysis": {
+    "segments": 40
+  }
+}
