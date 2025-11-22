@@ -225,6 +225,21 @@ class MainWindow(QMainWindow):
 
       self._sync_theme_checks()
 
+      # Lateral boundary condition submenu
+      m_settings.addSeparator()
+      bc_menu = m_settings.addMenu("Lateral Boundary Condition")
+
+      self.actBCFree = QAction("Free Head", self, checkable=True)
+      self.actBCFixed = QAction("Fixed Head", self, checkable=True)
+
+      self.actBCFree.triggered.connect(lambda: self._set_lateral_bc("free_head"))
+      self.actBCFixed.triggered.connect(lambda: self._set_lateral_bc("fixed_head"))
+
+      bc_menu.addAction(self.actBCFree)
+      bc_menu.addAction(self.actBCFixed)
+
+      self._sync_lateral_bc_checks()
+
       #Help
       m_help = self.menuBar().addMenu("&Help")
       act_about = QAction("About", self)
@@ -350,7 +365,7 @@ class MainWindow(QMainWindow):
           "pile": {},            #e.g., length_m, diameter_m, E, unit weight
           "soil_profile": [],    #list of layers with properties
           "loads": {},           #axial, lateral, moment
-          "analysis": {"segments": 40}
+          "analysis": {"segments": 40, "lateral_bc": "free_head"}
         }
         self.last_axial_results = None
         self.plot_area.clear()
@@ -368,6 +383,7 @@ class MainWindow(QMainWindow):
           self.project = load_project(fn)
           self.statusBar().showMessage(f"Loaded {pathlib.Path(fn).name}", 3000)
           self.refresh_ui()
+          self._sync_lateral_bc_checks()
           self._set_dirty(False)
           self._push_recent_file(fn)
         except Exception as e:
@@ -418,6 +434,7 @@ class MainWindow(QMainWindow):
           self.statusBar().showMessage(f"Loaded {pathlib.Path(path).name}", 3000)
           self.plot_area.clear()
           self.refresh_ui()
+          self._sync_lateral_bc_checks()
       except Exception as e:
           QMessageBox.critical(self, "Open Failed", f"Could not open file.\n\n{e}")
 
@@ -435,6 +452,30 @@ class MainWindow(QMainWindow):
   def _set_dirty(self, value: bool = True):
       self._dirty = bool(value)
       self._update_status_bar()
+
+  def _set_lateral_bc(self, bc: str):
+    """Save lateral BC to project and refresh checkmarks."""
+    if self.project is None:
+        return
+    self.project.setdefault("analysis", {})
+
+    if bc not in ("free_head", "fixed_head"):
+        bc = "free_head"
+    
+    self.project["analysis"]["lateral_bc"] = bc
+    self._sync_lateral_bc_checks()
+    self._set_dirty(True)
+
+  def _sync_lateral_bc_checks(self):
+    """Update menu checkmarks to match project settings."""
+    bc = "free_head"
+    if self.project is not None:
+        bc = self.project.get("analysis", {}).get("lateral_bc", "free_head")
+    
+    if hasattr(self, "actBCFree"):
+        self.actBCFree.setChecked(bc == "free_head")
+    if hasattr(self, "actBCFixed"):
+        self.actBCFixed.setChecked(bc == "fixed_head")
 
   def dragEnterEvent(self, e):
       if e.mimeData().hasUrls():
@@ -708,7 +749,10 @@ class MainWindow(QMainWindow):
     steps = [LateralLoadCase(H_N=float(h) * 1e3, M_Nm=M_user_Nm) for h in grid]
 
     # Solver configuration
-    cfg = LateralConfig(bc=BCType.FREE_HEAD, max_iters=80, tol=1e-6, relax=0.8)
+    bc_str = self.project.get("analysis", {}).get("lateral_bc", "free_head")
+    bc_enum = BCType.FREE_HEAD if bc_str == "free_head" else BCType.FIXED_HEAD
+
+    cfg = LateralConfig(bc=bc_enum, max_iters=80, tol=1e-6, relax=0.8)
 
     # Run analysis
     out = lateral_analysis(pile, steps, py_spring, cfg)
@@ -894,7 +938,7 @@ class MainWindow(QMainWindow):
           return
       
       R = 0.5 * D
-      n_theta = 48
+      n_theta = 120
       theta = np.linspace(0, 2*np.pi, n_theta)
 
       # soil colors
@@ -941,14 +985,14 @@ class MainWindow(QMainWindow):
           )
 
       # draw pile cylinder (undeformed)
-      z_line = np.linspace(0.0, L, 120)
+      z_line = np.linspace(0.0, L, 260)
       Z = -z_line[None, :]
       Xc = (R * np.cos(theta))[:, None]
       Yc = (R * np.sin(theta))[:, None]
       X = np.repeat(Xc, Z.shape[1], axis=1)
       Y = np.repeat(Yc, Z.shape[1], axis=1)
       Z = np.repeat(Z, X.shape[0], axis=0)
-      self._3d_ax.plot_surface(X, Y, Z, color=(0.75, 0.78, 0.84), alpha=0.95, rstride=1, cstride=4, linewidth=0.2, edgecolor=(0.9, 0.9, 0.95))
+      self._3d_ax.plot_surface(X, Y, Z, color=(0.75, 0.78, 0.84), alpha=0.98, rstride=1, cstride=1, linewidth=0.0, antialiased=True, shade=True)
 
       # demo: overlay lateral deflection of last step, scaled
       scale = float(self._3d_scale_spin.value() if self._3d_scale_spin else 50.0)
@@ -968,7 +1012,7 @@ class MainWindow(QMainWindow):
           # deflected cylinder (translate x by deflection)
           y_interp = np.interp(-Z[0, :], -z_defl, xd)
           Xdef = X + y_interp[None, :]
-          self._3d_ax.plot_surface(Xdef, Y, Z, color=(0.92, 0.55, 0.55), alpha=0.35, rstride=1, cstride=6, linewidth=0)
+          self._3d_ax.plot_surface(Xdef, Y, Z, color=(0.92, 0.55, 0.55), alpha=0.35, rstride=1, cstride=6, linewidth=0, antialiased=True, shade=True)
 
       # ground plane
       gx = np.linspace(-2*D, 2*D, 10)
