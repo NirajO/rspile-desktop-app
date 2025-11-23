@@ -18,8 +18,8 @@ from matplotlib.ticker import MaxNLocator, FormatStrFormatter
 from matplotlib.lines import Line2D
 import matplotlib.patches as mpatches
 from mpl_toolkits.mplot3d import Axes3D
-from PySide6.QtWidgets import (QApplication, QMainWindow, QMenu, QHBoxLayout, QWidget, QVBoxLayout, QLabel, QPushButton, QFileDialog, QMessageBox, QStatusBar, QTextEdit, QTabWidget, QToolBar, QDockWidget, QListWidget, QListWidgetItem, QFrame, QDoubleSpinBox, QFormLayout, QToolButton)
-from PySide6.QtCore import Qt, QPoint, QSettings, QPropertyAnimation, QEasingCurve
+from PySide6.QtWidgets import (QApplication, QMainWindow, QMenu, QHBoxLayout, QWidget, QVBoxLayout, QLabel, QPushButton, QFileDialog, QMessageBox, QStatusBar, QTextEdit, QTabWidget, QToolBar, QDockWidget, QListWidget, QListWidgetItem, QFrame, QDoubleSpinBox, QFormLayout, QToolButton, QStyle)
+from PySide6.QtCore import Qt, QPoint, QSize, QSettings, QPropertyAnimation, QEasingCurve
 from PySide6.QtGui import QAction, QKeySequence, QIcon
 from ..models.curves import get_tz_curve, get_qz_curve, get_py_curve, make_py_spring
 from reportlab.lib.pagesizes import letter
@@ -247,13 +247,13 @@ class MainWindow(QMainWindow):
       self._dock = QDockWidget("Project Inspector", self)
       self._dock.setObjectName("ProjectInspectorDock")
       self._dock.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
-      self._dock_expanded_width = 300
-      self._dock_collapsed_width = 28
+      self._dock_expanded_width = 400
+      self._dock_collapsed_width = 40
       self._dock_last_width = self._dock_expanded_width
 
-      self._dock.setMinimumWidth(0)
+      self._dock.setMinimumWidth(self._dock_collapsed_width)
       self._dock.setMaximumWidth(self._dock_expanded_width)
-      self._dock.setFixedWidth(self._dock_expanded_width)
+      self._dock.resize(self._dock_expanded_width, self._dock.height())
 
       self._dock.setFeatures(
           QDockWidget.DockWidgetMovable |
@@ -271,15 +271,25 @@ class MainWindow(QMainWindow):
 
       title_label = QLabel("Project Inspector")
       title_label.setStyleSheet("font-weight:600")
+      self._dock_title_label = title_label
 
       btn_toggle = QToolButton()
-      btn_toggle.setText("◀")
       btn_toggle.setToolTip("Hide/Show Project Inspector")
+      btn_toggle.setAutoRaise(True)
+
+      btn_toggle.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowLeft))
+
+      btn_toggle.setFixedSize(30, 30)
+      btn_toggle.setIconSize(QSize(14, 14))
+      btn_toggle.setStyleSheet("QToolButton {padding: 0px; margin: 0px;}")
+
       btn_toggle.clicked.connect(self.toggle_project_inspector)
 
       title_layout.addWidget(title_label)
       title_layout.addStretch(1)
       title_layout.addWidget(btn_toggle)
+
+      title_bar.setMinimumHeight(32)
 
       self._dock_toggle_btn = btn_toggle
       self._dock.setTitleBarWidget(title_bar)
@@ -484,75 +494,98 @@ class MainWindow(QMainWindow):
       self.status_dirty.setText("● Unsaved" if self._dirty else "")
 
   def toggle_project_inspector(self):
-      """Toggle: fully hide/show the dock with slide"""
-      if not hasattr(self, "_dock") or self._dock is None:
-          return
-      
-      # If currently visible, collapse to 0 then hide
-      if self._dock.isVisible() and not self._dock_is_collapsed:
-          start_w = self._dock.width()
-          self._dock_last_width = max(180, start_w)
-          end_w = self._dock_collapsed_width
+    """Toggle: collapse to a thin strip (arrow visible) or expand back."""
+    if not hasattr(self, "_dock") or self._dock is None:
+        return
 
-          if self._dock_anim is not None and self._dock_anim.state() == QPropertyAnimation.Running:
-              self._dock_anim.stop()
+    collapsed_w = getattr(self, "_dock_collapsed_width", 28)
+    expanded_w  = getattr(self, "_dock_last_width", getattr(self, "_dock_expanded_width", 300))
 
-          self._dock_anim = QPropertyAnimation(self._dock, b"maximumWidth")
-          self._dock_anim.setDuration(180)
-          self._dock_anim.setEasingCurve(QEasingCurve.InOutCubic)
-          self._dock_anim.setStartValue(start_w)
-          self._dock_anim.setEndValue(end_w)
+    # ---------- Collapse ----------
+    if self._dock.isVisible() and not self._dock_is_collapsed:
+        start_w = self._dock.width()
+        self._dock_last_width = max(180, start_w)
+        end_w = collapsed_w   # <-- NOT 0 anymore
 
-          def on_value_changed(val):
-              self._dock.setFixedWidth(int(val))
-          
-          def on_finished():
-              self._dock_is_collapsed = True
+        if self._dock_anim and self._dock_anim.state() == QPropertyAnimation.Running:
+            self._dock_anim.stop()
 
-              if self._dock.widget():
+        # keep dock from fighting the animation
+        self._dock.setMinimumWidth(collapsed_w)
+
+        self._dock_anim = QPropertyAnimation(self._dock, b"maximumWidth")
+        self._dock_anim.setDuration(180)
+        self._dock_anim.setEasingCurve(QEasingCurve.InOutCubic)
+        self._dock_anim.setStartValue(start_w)
+        self._dock_anim.setEndValue(end_w)
+
+        def on_value_changed(val):
+            self._dock.setFixedWidth(int(val))
+
+        def on_finished():
+            self._dock_is_collapsed = True
+
+            # hide content, keep titlebar
+            if self._dock.widget():
                 self._dock.widget().setVisible(False)
-            
-              self._dock.setFixedWidth(end_w)
-              self._dock.setMaximumWidth(end_w)
 
-              if hasattr(self, "_dock_toggle_btn"):
-                  self._dock_toggle_btn.setText("▶")
-          
-          self._dock_anim.valueChanged.connect(on_value_changed)
-          self._dock_anim.finished.connect(on_finished)
-          self._dock_anim.start()
-          return
-      
-      if self._dock.widget():
-          self._dock.widget().setVisible(True)
+            # hide label so arrow has space
+            if hasattr(self, "_dock_title_label"):
+                self._dock_title_label.setVisible(False)
 
-      start_w = self._dock_collapsed_width
-      end_w = getattr(self, "_dock_last_width", self._dock_expanded_width)
+            self._dock.setFixedWidth(end_w)
+            self._dock.setMaximumWidth(end_w)
 
-      if self._dock_anim is not None and self._dock_anim.state() == QPropertyAnimation.Running:
-          self._dock_anim.stop()
+            if hasattr(self, "_dock_toggle_btn"):
+                self._dock_toggle_btn.setIcon(
+                    self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowRight)
+                )
 
-      self._dock.setMaximumWidth(end_w)
-      self._dock.setFixedWidth(start_w)
+        self._dock_anim.valueChanged.connect(on_value_changed)
+        self._dock_anim.finished.connect(on_finished)
+        self._dock_anim.start()
+        return
 
-      self._dock_anim = QPropertyAnimation(self._dock, b"maximumWidth")
-      self._dock_anim.setDuration(180)
-      self._dock_anim.setEasingCurve(QEasingCurve.InOutCubic)
-      self._dock_anim.setStartValue(start_w)
-      self._dock_anim.setEndValue(end_w)
+    # ---------- Expand ----------
+    self._dock.show()
+    if self._dock.widget():
+        self._dock.widget().setVisible(True)
 
-      def on_value_changed(val):
-          self._dock.setFixedWidth(int(val))
+    if hasattr(self, "_dock_title_label"):
+        self._dock_title_label.setVisible(True)
 
-      def on_finished():
-          self._dock_is_collapsed = False
-          self._dock.setFixedWidth(end_w)
-          if hasattr(self, "_dock_toggle_btn"):
-              self._dock_toggle_btn.setText("◀")
+    start_w = collapsed_w
+    end_w = expanded_w
 
-      self._dock_anim.valueChanged.connect(on_value_changed)
-      self._dock_anim.finished.connect(on_finished)
-      self._dock_anim.start()
+    if self._dock_anim and self._dock_anim.state() == QPropertyAnimation.Running:
+        self._dock_anim.stop()
+
+    self._dock.setMaximumWidth(start_w)
+    self._dock.setMinimumWidth(collapsed_w)
+
+    self._dock_anim = QPropertyAnimation(self._dock, b"maximumWidth")
+    self._dock_anim.setDuration(180)
+    self._dock_anim.setEasingCurve(QEasingCurve.InOutCubic)
+    self._dock_anim.setStartValue(start_w)
+    self._dock_anim.setEndValue(end_w)
+
+    def on_value_changed(val):
+        self._dock.setFixedWidth(int(val))
+
+    def on_finished():
+        self._dock_is_collapsed = False
+        self._dock.setFixedWidth(end_w)
+        self._dock.setMaximumWidth(end_w)
+        self._dock.setMinimumWidth(collapsed_w)
+        if hasattr(self, "_dock_toggle_btn"):
+            self._dock_toggle_btn.setIcon(
+                self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowLeft)
+            )
+
+    self._dock_anim.valueChanged.connect(on_value_changed)
+    self._dock_anim.finished.connect(on_finished)
+    self._dock_anim.start()
+
 
   def _set_dirty(self, value: bool = True):
       self._dirty = bool(value)
