@@ -114,9 +114,10 @@ class LoadDialog(QDialog):
   
 class SoilLayerDialog(QDialog):
   # Adds a single soil layer either clay or sand.
-  def __init__(self, parent=None):
+  def __init__(self, layer: dict | None = None, parent=None):
     super().__init__(parent)
-    self.setWindowTitle("Add Soil Layer")
+    self.setWindowTitle("Add Soil Layer" if not layer else "Edit Soil Layer")
+    self._layer = layer or {}
     lay = QFormLayout(self)
 
     self.from_m = QDoubleSpinBox()
@@ -156,6 +157,20 @@ class SoilLayerDialog(QDialog):
     lay.addRow("Unit Weight", self.gamma)
     lay.addRow("Undrained shear (su, clay)", self.su)
     lay.addRow("Friction angle (phi, sand)", self.phi)
+
+    if self._layer:
+       self.from_m.setValue(float(self._layer.get("from_m", 0.0)))
+       self.to_m.setValue(float(self._layer.get("to_m", 0.0)))
+
+       t = (self._layer.get("type") or "clay").lower()
+       if t not in ("clay", "sand"):
+          t = "clay"
+       self.type.setCurrentText(t)
+
+       self.gamma.setValue(float(self._layer.get("gamma_kNpm3", 18.0)))
+
+       self.su.setValue(float(self._layer.get("undrained_shear_strength_kPa", 0.0)))
+       self.phi.setValue(float(self._layer.get("phi_deg", 30.0)))
 
     btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
     btns.accepted.connect(self.accept)

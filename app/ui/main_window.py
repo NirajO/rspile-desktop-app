@@ -18,8 +18,8 @@ from matplotlib.ticker import MaxNLocator, FormatStrFormatter
 from matplotlib.lines import Line2D
 import matplotlib.patches as mpatches
 from mpl_toolkits.mplot3d import Axes3D
-from PySide6.QtWidgets import (QApplication, QMainWindow, QMenu, QHBoxLayout, QWidget, QVBoxLayout, QLabel, QPushButton, QFileDialog, QMessageBox, QStatusBar, QTextEdit, QTabWidget, QToolBar, QDockWidget, QListWidget, QListWidgetItem, QFrame, QDoubleSpinBox, QFormLayout, QToolButton, QStyle)
-from PySide6.QtCore import Qt, QPoint, QSize, QSettings, QPropertyAnimation, QEasingCurve
+from PySide6.QtWidgets import (QApplication, QMainWindow, QMenu, QHBoxLayout, QWidget, QVBoxLayout, QLabel, QPushButton, QFileDialog, QMessageBox, QStatusBar, QTextEdit, QTabWidget, QToolBar, QDockWidget, QListWidget, QListWidgetItem, QFrame, QDoubleSpinBox, QFormLayout, QToolButton, QStyle, QTextBrowser)
+from PySide6.QtCore import Qt, QPoint, QSize, QSettings, QPropertyAnimation, QEasingCurve, QUrl
 from PySide6.QtGui import QAction, QKeySequence, QIcon
 from ..models.curves import get_tz_curve, get_qz_curve, get_py_curve, make_py_spring
 from reportlab.lib.pagesizes import letter
@@ -52,8 +52,10 @@ class MainWindow(QMainWindow):
     self.welcome = self._make_welcome()
     self.layout.addWidget(self.welcome)
 
-    self.info = QTextEdit()
-    self.info.setReadOnly(True)
+    self.info = QTextBrowser()
+    self.info.setOpenExternalLinks(False)
+    self.info.setOpenLinks(False)
+    self.info.anchorClicked.connect(self._on_summary_link_clicked)
     self.info.setMinimumHeight(140)
     self.info.setObjectName("ProjectSummary")
     self.info.setFrameShape(QFrame.NoFrame)
@@ -331,6 +333,16 @@ class MainWindow(QMainWindow):
 
       dlay.addLayout(row_recent)
       dlay.addWidget(self.recent_list)
+
+      lbl_layers = QLabel("Soil Layers")
+      lbl_layers.setStyleSheet("margin-top: 8px; font-weight: 600;")
+      dlay.addWidget(lbl_layers)
+
+      self.layers_list = QListWidget()
+      self.layers_list.setMaximumHeight(220)
+      self.layers_list.setSpacing(2)
+      dlay.addWidget(self.layers_list)
+
       dlay.addStretch(1)
 
       dockw.setLayout(dlay)
@@ -1683,7 +1695,7 @@ class MainWindow(QMainWindow):
 
   def add_soil_layer(self):
       self._ensure_project()
-      dlg = SoilLayerDialog(self)
+      dlg = SoilLayerDialog(parent=self)
       if dlg.exec():
           layer = dlg.result_data()
           self.project.setdefault("soil_profile", []).append(layer)
@@ -1691,6 +1703,46 @@ class MainWindow(QMainWindow):
           self.project["soil_profile"].sort(key=lambda L: L.get("from_m", 0.0))
           self.refresh_ui()
           self._set_dirty(True)
+
+  def edit_soil_layer(self, index: int):
+      """Simplest edit: open dialog blank, then replace layer."""
+      self._ensure_project()
+      layers = self.project.setdefault("soil_profile", [])
+      if index < 0 or index >= len(layers):
+          return
+      
+      current_layer = layers[index]
+      
+      dlg = SoilLayerDialog(current_layer, self)
+      if dlg.exec():
+          new_layer = dlg.result_data()
+          layers[index] = new_layer
+          layers.sort(key=lambda L: L.get("from_m", 0.0))
+          self.refresh_ui()
+          self._set_dirty(True)
+
+  def delete_soil_layer(self, index: int):
+      self._ensure_project()
+      layers = self.project.setdefault("soil_profile", [])
+      if index < 0 or index >= len(layers):
+          return
+      
+      L = layers[index]
+      typ = (L.get("type") or "soil").title()
+      z0 = L.get("from_m", 0)
+      z1 = L.get("to_m", 0)
+
+      ok = QMessageBox.question(
+          self, "Delete Soil Layer",
+          f"Delete layer {index+1}: {typ} ({z0:g}-{z1:g} m)?",
+          QMessageBox.Yes | QMessageBox.No
+      )
+      if ok != QMessageBox.Yes:
+          return
+      
+      layers.pop(index)
+      self.refresh_ui()
+      self._set_dirty(True)
     
   def closeEvent(self, e):
       s = QSettings("Pile Analysis", "StudentEdition")
@@ -1723,6 +1775,74 @@ class MainWindow(QMainWindow):
       idx = self.plot_area.addTab(wrap, title)
       self.plot_area.setCurrentIndex(idx)
       return canvas, toolbar
+  
+  def _rebuild_layers_list(self):
+      """Fill left dock soil list with Edit/Delete buttons."""
+      if not hasattr(self, "layers_list"):
+          return
+      
+      self.layers_list.clear()
+      layers = (self.project or {}).get("soil_profile", [])
+
+      if not layers:
+          item = QListWidgetItem("(no soil layers)")
+          item.setFlags(Qt.NoItemFlags)
+          self.layers_list.addItem(item)
+          return
+      
+      for idx, layer in enumerate(layers):
+          row = QWidget()
+          h = QHBoxLayout(row)
+          h.setContentsMargins(6, 2, 6, 2)
+          h.setSpacing(6)
+
+          typ = (layer.get("type") or "soil").title()
+          z0 = layer.get("from_m", 0)
+          z1 = layer.get("to_m", 0)
+
+          lbl = QLabel(f"{idx+1}. {typ} ({z0:g}-{z1:g} m)")
+          lbl.setStyleSheet("font-size:12px;")
+
+          btn_edit = QToolButton()
+          btn_edit.setText("Edit")
+          btn_edit.setAutoRaise(True)
+          btn_edit.clicked.connect(lambda _=False, i=idx: self.edit_soil_layer(i))
+
+          btn_del = QToolButton()
+          btn_del.setText("Delete")
+          btn_del.setAutoRaise(True)
+          btn_del.clicked.connect(lambda _=False, i=idx: self.delete_soil_layer(i))
+
+          h.addWidget(lbl)
+          h.addStretch(1)
+          h.addWidget(btn_edit)
+          h.addWidget(btn_del)
+
+          item = QListWidgetItem()
+          item.setSizeHint(row.sizeHint())
+          self.layers_list.addItem(item)
+          self.layers_list.setItemWidget(item, row)
+
+  def _on_summary_link_clicked(self, url: QUrl):
+      """Handles clicks from Project Summary soil-layer actions."""
+      if self.project is None:
+          return
+      
+      s = url.toString()
+
+      try:
+          if s.startswith("edit-layer:"):
+              idx = int(s.split("edit-layer:")[1])
+              self.edit_soil_layer(idx)
+          
+          elif s.startswith("del-layer:"):
+              idx = int(s.split("del-layer:")[1])
+              self.delete_soil_layer(idx)
+
+      except Exception as e:
+          print("summary link error:", e)
+
+      self.refresh_ui()
 
   #-----UI helper-------
   def refresh_ui(self):
@@ -1732,6 +1852,8 @@ class MainWindow(QMainWindow):
               self.btn_gen.hide()
               self.welcome.show()
               self._lbl_meta.setText("No Projects Loaded.")
+              if hasattr(self, "layers_list"):
+                  self.layers_list.clear()
               return
             
             # existing summary
@@ -1746,6 +1868,14 @@ class MainWindow(QMainWindow):
             pile = self.project.get("pile", {})
             loads = self.project.get("loads", {})
             layers = self.project.get("soil_profile", [])
+            
+            is_dark = getattr(self, "_current_theme", "light") == "dark"
+            fg = "#e9edf5" if is_dark else "#111827"
+            muted = "#a6aec2" if is_dark else "#555"
+            tip = "#9aa4c7" if is_dark else "#888"
+            line_col = "#596073" if is_dark else "#d0d7e2"
+            header_col = "#8ab4ff" if is_dark else "#2b6cb0"
+
             self._lbl_meta.setText(
                 f"<b>Units</b>: {meta.get('units', 'SI')}<br>"
                 f"<b>Pile</b>: {('✓' if pile else '—')} &nbsp; "
@@ -1774,7 +1904,7 @@ class MainWindow(QMainWindow):
                     f"Moment = {loads.get('moment_kNm', 0)} kN.m"
                 )
             else:
-                loads_text = "<span style='color:#888;'>(not defined)</span"
+                loads_text = "<span style='color:#888;'>(not defined)</span>"
 
             # Soil layers table
             layer_rows = ""
@@ -1786,6 +1916,16 @@ class MainWindow(QMainWindow):
                     soil_type = "Sand"
                     strength = f"φ = {L.get('phi_deg', 0)}°"  
 
+                actions_html = (
+                    f"<a href='edit-layer:{i-1}' style='"
+                    "display: inline-block; padding: 2px 8px; border: 1px solid #777; border-radius: 6px;"
+                    "text-decoration: none; font-size: 13px; margin-right: 10px;'>Edit</a>"
+                    "&nbsp;&nbsp;&nbsp;"
+                    f"<a href='del-layer:{i-1}' style='"
+                    "display: inline-block; padding: 2px 8px; border: 1px solid #b55; border-radius: 6px;"
+                    "text-decoration: none; font-size: 13px; color: #b55;'>Delete</a>"
+                )
+
                 layer_rows += (
                     "<tr>"
                     f"<td style='padding: 2px 18px 2px 0;'>{i}</td>"
@@ -1793,6 +1933,7 @@ class MainWindow(QMainWindow):
                     f"<td style='padding: 2px 18px 2px 0;'>{L.get('from_m', 0):g}-{L.get('to_m', 0):g} m</td>"
                     f"<td style='padding: 2px 18px 2px 0;'>{L.get('gamma_kNpm3', 0):g} kN/m³</td>"
                     f"<td style='padding: 2px 18px 2px 0;'>{strength}</td>"
+                    f"<td style='padding: 2px 0 2px 0;'>{actions_html}</td>"
                     "</tr>"
                 )    
 
@@ -1800,46 +1941,58 @@ class MainWindow(QMainWindow):
             if layers:
                 layers_section = f"""
                     <table style="border-collapse:collapse; margin-top: 8px; font-size: 16px;">
-                        <tr style="font-weight:600; color:#555;">
+                        <tr style="font-weight:600; color:{muted};">
                             <th align="left" style="padding: 0 18px 4px 0;">#</th>
                             <th align="left" style="padding: 0 18px 4px 0;">Type</th>
                             <th align="left" style="padding: 0 18px 4px 0;">Depth</th>
                             <th align="left" style="padding: 0 18px 4px 0;">γ</th>    
-                            <th align="left">Strength</th>
+                            <th align="left" style="padding: 0 18px 4px 0;">Strength</th>
+                            <th align="left">Actions</th>
                         </tr>
                         {layer_rows}
                     </table>"""
+            
+            box_bg = "#2f3340" if is_dark else "#ffffff"
+            box_border = "#596073" if is_dark else "#d0d7e2"
 
             html = f"""
-            <div>
-                <div style="
-                    font-size: 13px;
-                    font-weight: 600;
-                    letter-spacing: 0.5px;
-                    color: #2b6cb0;
-                    margin-bottom: 2px;>
-                 Project Summary
-                </div>
-                <div style="height: 1px; background: #d0d7e2; margin-bottom: 6px;"></div> 
+                <div style="color:{fg}; background: {box_bg}; border: 1px solid {box_border}; border-radius: 1opx; padding: 10px;">
+                    <div style="font-size: 13px; font-weight: 600; letter-spacing: 0.5px; color: {header_col}; margin-bottom: 2px;">
+                        Project Summary
+                    </div>
+                    <div style="height: 1px; background: {line_col}; margin-bottom: 6px;"></div>
 
-                <p style="margin: 0 0 4px;">
-                    <b>Units:</b> {units}<br>
-                    <b>Pile:</b> {pile_text}<br>
-                    <b>Loads:</b> {loads_text}<br>
-                    <b>Soil Layers:</b> {len(layers)} defined
-                </p>
+                    <table style="border-collapse: collapse; margin: 4px 0 8px 0; font-size: 16px; color: {fg};">
+                        <tr>
+                            <th align="left" style="padding: 4px 18px 4px 0; color: {muted};">Units</th>
+                            <td style="padding: 4px 0;">{units}</td>
+                        </tr>
+                        <tr>
+                            <th align="left" style="padding: 4px 18px 4px 0; color: {muted};">Pile</th>
+                            <td style="padding: 4px 0;">{pile_text}</td>
+                        </tr>
+                        <tr>
+                            <th align="left" style="padding: 4px 18px 4px 0; color: {muted};">Loads</th>
+                            <td style="padding: 4px 0;">{loads_text}</td>
+                        </tr>
+                        <tr>
+                            <th align="left" style="padding: 4px 18px 4px 0; color: {muted};">Soil Layers</th>
+                            <td style="padding: 4px 0;">{len(layers)} defined</td>
+                        </tr>
+                    </table>
 
-                {layers_section}
+                    {layers_section}
 
-                <p style="margin-top: 6px; color: #888; font-size: 16px;">
-                    Tip: Use the Edit controls to update inputs.
-                    Drag &amp; drop a <code>.pile.json</code> file anywhere to open an existing project.
-                </p>
-            </div>"""
+                    <p style="margin-top: 6px; color: {tip}; font-size: 16px;">
+                        Tip: Use the Edit Controls to update inputs.
+                        Drag &amp; drop a <code>.pile.json</code> file anywhere to open an existing project.
+                    </p>
+                </div>"""
 
             self.info.setHtml(html)
             self.btn_gen.setEnabled(True)
             self._update_status_bar()
+            self._rebuild_layers_list()
 
             if getattr(self, "_dock3d", None) and self._dock3d.isVisible():
                 try:
@@ -1859,8 +2012,9 @@ class MainWindow(QMainWindow):
       theme = "light"
     self._current_theme = theme
     self._apply_theme(theme)
-    QSettings("RSPile", "StudentEdition").setValue("theme", theme)
+    QSettings("Pile Analysis", "StudentEdition").setValue("theme", theme)
     self._sync_theme_checks()
+    self.refresh_ui()
     
   def toggle_theme(self):
     self.set_theme("dark" if getattr(self, "_current_theme", "light") != "dark" else "light")
