@@ -18,7 +18,7 @@ from matplotlib.ticker import MaxNLocator, FormatStrFormatter
 from matplotlib.lines import Line2D
 import matplotlib.patches as mpatches
 from mpl_toolkits.mplot3d import Axes3D
-from PySide6.QtWidgets import (QApplication, QMainWindow, QMenu, QHBoxLayout, QWidget, QVBoxLayout, QLabel, QPushButton, QFileDialog, QMessageBox, QStatusBar, QTextEdit, QTabWidget, QToolBar, QDockWidget, QListWidget, QListWidgetItem, QFrame, QDoubleSpinBox, QFormLayout, QToolButton, QStyle, QTextBrowser)
+from PySide6.QtWidgets import (QApplication, QMainWindow, QMenu, QHBoxLayout, QWidget, QVBoxLayout, QLabel, QPushButton, QFileDialog, QMessageBox, QStatusBar, QTextEdit, QTabWidget, QToolBar, QDockWidget, QListWidget, QListWidgetItem, QFrame, QDoubleSpinBox, QFormLayout, QToolButton, QStyle, QTextBrowser, QDialog)
 from PySide6.QtCore import Qt, QPoint, QSize, QSettings, QPropertyAnimation, QEasingCurve, QUrl
 from PySide6.QtGui import QAction, QKeySequence, QIcon
 from ..models.curves import get_tz_curve, get_qz_curve, get_py_curve, make_py_spring
@@ -241,6 +241,17 @@ class MainWindow(QMainWindow):
 
       #Help
       m_help = self.menuBar().addMenu("&Help")
+
+      act_userguide = QAction("User Guide", self)
+      act_userguide.triggered.connect(self.show_user_guide)
+      m_help.addAction(act_userguide)
+
+      act_shortcuts = QAction("Keyboard Shortcuts", self)
+      act_shortcuts.triggered.connect(self.show_shortcuts)
+      m_help.addAction(act_shortcuts)
+
+      m_help.addSeparator()
+
       act_about = QAction("About", self)
       act_about.triggered.connect(self.about)
       m_help.addAction(act_about)
@@ -357,11 +368,143 @@ class MainWindow(QMainWindow):
         QMessageBox.information(
           self,
           "About",
-          "Single pile analysis under axial (up/down) and lateral (side-ways) " \
-          " loads using soil-pile interaction models "
-          " (t-z, q-z for axial; p-y for lateral)" \
-          " Developed by Niraj Ojha, Hemraj Khatri and Manish Lohani at McNeese State University"
+          "Single pile analysis under axial (up/down) and lateral (side-ways)loads using\n " 
+          "soil-pile interaction models (t-z, q-z for axial; p-y for lateral).\n\n"
+          " Developed by Niraj Ojha, Hemraj Khatri and Manish Lohani\n"
+          "McNeese State University.\n\n"
+          "For step-by-step instructions, see Help -> User Guide."
         )
+
+  def show_user_guide(self):
+    """Show a built-in user guide for users."""
+    guide_html = """
+    <h2>Pile Analysis Tool – User Guide</h2>
+
+    <h3>1. Overview</h3>
+      <p>
+        This tool analyzes a single pile under axial (vertical) and lateral (sideways) loads
+        using soil–pile interaction curves (t–z, q–z, p–y).
+      </p>
+
+      <h3>2. Getting Started</h3>
+      <ol>
+        <li><b>Create a project:</b> Use <i>File → New Project</i> or the New Project button on the welcome screen.</li>
+        <li><b>Enter pile properties:</b> Go to <i>Edit → Edit Pile…</i> and specify length, diameter, elastic modulus, and unit weight.</li>
+        <li><b>Add soil layers:</b> Go to <i>Edit → Add Soil Layer…</i>. For each layer, define depth range, type (clay or sand), and strength properties.</li>
+        <li><b>Define loads:</b> Use <i>Edit → Edit Loads…</i> to enter axial, lateral, and moment loads at the pile head.</li>
+      </ol>
+
+      <h3>3. Generating Curves</h3>
+      <p>
+        After pile and soil data are defined, click <b>Generate Curves</b> or use the button in the Project Inspector.<br>
+        Tabs will appear showing:
+      </p>
+      <ul>
+        <li><b>t–z curves</b> – shaft friction vs axial slip for each soil layer</li>
+        <li><b>p–y curves</b> – lateral soil reaction vs lateral deflection</li>
+        <li><b>q–z curve</b> – tip resistance vs settlement at the pile toe</li>
+      </ul>
+
+      <h3>4. Axial Analysis</h3>
+      <ol>
+        <li>Select <i>Edit → Run Axial Analysis</i> or use the shortcut on the left panel.</li>
+        <li>The tool computes load–settlement response using the t–z and q–z curves.</li>
+        <li>Result tabs include:
+          <ul>
+            <li><b>Load–Settlement:</b> axial load vs head settlement</li>
+            <li><b>Shear vs Depth:</b> cumulative shaft shear along depth</li>
+          </ul>
+        </li>
+        <li>Use the buttons below each plot to <b>Save Axial CSV</b> or <b>Save Axial PDF</b>.</li>
+      </ol>
+
+      <h3>5. Lateral Analysis</h3>
+      <ol>
+        <li>Select <i>Edit → Run Lateral Analysis</i>.</li>
+        <li>The solver uses p–y curves to compute lateral deflections, moments, and shear.</li>
+        <li>Result tabs include:
+          <ul>
+            <li><b>Lateral H–y:</b> lateral head load vs head deflection</li>
+            <li><b>Deflection vs Depth</b></li>
+            <li><b>Moment vs Depth</b></li>
+            <li><b>Shear vs Depth (Lateral)</b></li>
+          </ul>
+        </li>
+        <li>Use the export buttons to save CSV/PDF for lateral results.</li>
+      </ol>
+
+      <h3>6. Saving and Opening Projects</h3>
+      <ul>
+        <li><b>Save As:</b> <i>File → Save As</i> saves a <code>.pile.json</code> project file.</li>
+        <li><b>Open:</b> <i>File → Open</i> loads an existing project.</li>
+        <li><b>Open Recent:</b> use the recent list in the File menu or the left dock.</li>
+        <li>You can also drag-and-drop a <code>.pile.json</code> file into the main window to open it.</li>
+      </ul>
+
+      <h3>7. Settings and Themes</h3>
+      <ul>
+        <li><b>Theme:</b> use <i>Settings → Light Mode</i> or <i>Settings → Dark Mode</i>.</li>
+        <li><b>Lateral boundary condition:</b> under <i>Settings → Lateral Boundary Condition</i> choose Free Head or Fixed Head, then rerun lateral analysis.</li>
+        <li><b>3D View:</b> use <i>Ctrl+3</i> or the toolbar button to see the 3D pile view (if available).</li>
+      </ul>
+
+      <h3>8. Tips & Troubleshooting</h3>
+      <ul>
+        <li>If curves or analyses do not run, check that pile, loads, and soil layers are all defined.</li>
+        <li>Watch for messages in the status bar at the bottom of the window.</li>
+        <li>If a warning mentions missing <code>gamma_kNpm3</code>, re-open that soil layer and fill in the unit weight.</li>
+      </ul>
+
+      <p style="font-size:11px; color:#777; margin-top:12px;">
+        McNeese State University – Pile Analysis Tool (Student Edition)
+      </p>
+      """
+    
+    browser = QTextBrowser()
+    browser.setHtml(guide_html)
+    browser.setMinimumSize(700, 550)
+    browser.setOpenExternalLinks(False)
+
+    dlg = QDialog(self)
+    dlg.setWindowTitle("User Guide")
+    layout = QVBoxLayout(dlg)
+    layout.addWidget(browser)
+    dlg.setLayout(layout)
+    dlg.exec()
+
+  def show_shortcuts(self):
+      """Show a list of useful keyboard shortcuts."""
+      shortcuts_html = """
+      <h2>Keyboard Shortcuts</h2>
+      <table border="0" cellspacing="4" cellpadding="2">
+        <tr><td><b>Ctrl+N</b></td><td>New Project</td></tr>
+        <tr><td><b>Ctrl+O</b></td><td>Open Project</td></tr>
+        <tr><td><b>Ctrl+Shift+S</b></td><td>Save Project As</td></tr>
+
+        <tr><td><b>Ctrl+P</b></td><td>Edit Pile…</td></tr>
+        <tr><td><b>Ctrl+L</b></td><td>Edit Loads…</td></tr>
+        <tr><td><b>Ctrl+S</b></td><td>Add Soil Layer…</td></tr>
+
+        <tr><td><b>Ctrl+Shift+A</b></td><td>Run Axial Analysis</td></tr>
+        <tr><td><b>Ctrl+Shift+L</b></td><td>Run Lateral Analysis</td></tr>
+        <tr><td><b>Ctrl+3</b></td><td>Open 3D View</td></tr>
+      </table>
+
+      <p style="font-size:11px; color:#777; margin-top:12px;">
+        Hint: Most commands are also available from the toolbar and the Project Inspector on the left.
+      </p>
+      """
+      browser = QTextBrowser()
+      browser.setHtml(shortcuts_html)
+      browser.setMinimumSize(400, 350)
+
+      dlg = QDialog(self)
+      dlg.setWindowTitle("Keyboard Shortcuts")
+      layout = QVBoxLayout(dlg)
+      layout.addWidget(browser)
+      dlg.setLayout(layout)
+      dlg.exec()
+  
 
   def _make_welcome(self) -> QWidget:
       w = QWidget()
