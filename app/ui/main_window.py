@@ -21,17 +21,21 @@ from mpl_toolkits.mplot3d import Axes3D
 from PySide6.QtWidgets import (QApplication, QMainWindow, QMenu, QHBoxLayout, QWidget, QVBoxLayout, QLabel, QPushButton, QFileDialog, QMessageBox, QStatusBar, QTextEdit, QTabWidget, QToolBar, QDockWidget, QListWidget, QListWidgetItem, QFrame, QDoubleSpinBox, QFormLayout, QToolButton, QStyle, QTextBrowser, QDialog)
 from PySide6.QtCore import Qt, QPoint, QSize, QSettings, QPropertyAnimation, QEasingCurve, QUrl
 from PySide6.QtGui import QAction, QKeySequence, QIcon
-from ..models.curves import get_tz_curve, get_qz_curve, get_py_curve, make_py_spring
+from ..curves import get_tz_curve, get_qz_curve, get_py_curve, make_py_spring
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.units import inch
 from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen import canvas as rl_canvas
-from ..models.axial import axial_analysis
-from ..models.lateral import PileProps as LatPileProps, LateralLoadCase, BCType, LateralConfig, lateral_analysis
+from ..axial import axial_analysis
+from ..lateral import PileProps as LatPileProps, LateralLoadCase, BCType, LateralConfig, lateral_analysis
 
 # relative imports within the package
-from .dialogs import PileDialog, LoadDialog, SoilLayerDialog
-from ..io.serializer import load_project, save_project
+from ..dialogs import PileDialog, LoadDialog, SoilLayerDialog
+from ..serializer import load_project, save_project
+
+from app.core.models import AxialInputs, LateralInputs
+from app.core.axial_engine import run_axial
+from app.core.lateral_engine import run_lateral
 
 class MainWindow(QMainWindow):
   def __init__(self):

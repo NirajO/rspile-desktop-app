@@ -206,4 +206,15 @@ def axial_analysis(pile: Dict, loads: Dict, soil_profile: List[Dict], n_segments
     "settlements_m": np.asarray(settlements),
     "plots": plots,
   }
+
+def run_axial_analysis(params: dict) -> dict:
+  """
+  Single public entry point for axial pile analysis.
+  """
+  result = {
+    "message": "Axial analysis executed",
+    "inputs": params
+  }
+
+  return result
   

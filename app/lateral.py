@@ -236,4 +236,13 @@ def lateral_analysis(
     "meta": {"EI_Nm2": EI, "length_m": L, "n_nodes": n}
   }
 
+def run_lateral_analysis(params: dict) -> dict:
+  """
+  Single public entry point for lateral pile analysis.
+  """
+  return {
+    "message": "Lateral analysis executed",
+    "inputs": params,
+  }
+
 
