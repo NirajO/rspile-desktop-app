@@ -20,24 +20,6 @@ TECHNOLOGIES USED
 • Matplotlib
 • PyInstaller
 
-PROJECT STRUCTURE
-
-rspile-desktop-app/
-│
-├── app/
-│ ├── main.py
-│ ├── axial.py
-│ ├── lateral.py
-│ ├── curves.py
-│ ├── serializer.py
-│ ├── dialogs.py
-│ └── ui/
-│ └── main_window.py
-│
-├── icons/
-├── installer/
-├── requirements.txt
-
 INSTALLATION
 
 Clone the repository
